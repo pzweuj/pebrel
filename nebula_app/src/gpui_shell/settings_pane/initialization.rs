@@ -123,6 +123,13 @@ impl SettingsPane {
             cx,
         );
         add_select(
+            "files_panel_side",
+            &["right", "left"],
+            runtime.files_panel_side.settings_value(),
+            window,
+            cx,
+        );
+        add_select(
             "tab_reveal",
             &["slide", "instant"],
             runtime.tab_reveal.settings_value(),

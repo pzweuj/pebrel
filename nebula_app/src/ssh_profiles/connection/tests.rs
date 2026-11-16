@@ -226,3 +226,17 @@ fn jump_dependents_preserves_order_and_excludes_self_aliases_and_inactive_drafts
     assert_eq!(profiles.jump_dependents("bastion"), vec!["root@second", "root@first"]);
     assert!(profiles.jump_dependents("missing").is_empty());
 }
+
+#[test]
+fn x11_forwarding_defaults_off_and_round_trips_in_profiles() {
+    let mut profiles = SshProfiles::default();
+    assert!(!profiles.for_destination("root@host").connection.x11_forwarding);
+
+    let mut profile = profiles.for_destination("root@host");
+    profile.connection.x11_forwarding = true;
+    profiles.upsert(profile.clone());
+    let serialized = serde_json::to_string(&profiles).unwrap();
+    let restored: SshProfiles = serde_json::from_str(&serialized).unwrap();
+    assert!(restored.for_destination("root@host").connection.x11_forwarding);
+    assert_eq!(restored.for_destination("root@host"), profile);
+}

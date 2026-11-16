@@ -25,6 +25,9 @@ pub(crate) fn show_update_notification(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     let cached_status = result.asset.as_ref().map(crate::update_download::status);
     if matches!(cached_status, Some(DownloadStatus::InstallFailed(_))) {
         show_download_outcome_notification(result, cached_status.unwrap(), window, cx);
@@ -195,6 +198,9 @@ pub(crate) fn open_update_dialog(
     window: &mut Window,
     cx: &mut App,
 ) {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     if let Err(error) = crate::update_check::mark_prompted(&result.latest) {
         log::warn!("update-check: failed to record prompt: {error}");
     }

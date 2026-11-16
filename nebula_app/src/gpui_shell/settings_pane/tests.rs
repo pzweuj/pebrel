@@ -688,3 +688,40 @@ mod shell_row_geometry {
         );
     }
 }
+
+#[cfg(feature = "gpui-test-support")]
+#[gpui::test]
+fn about_page_has_no_update_controls_even_with_old_preferences(cx: &mut gpui::TestAppContext) {
+    use crate::gpui_shell::settings_fixture::{SettingsBytesGuard, lock_theme_studio};
+    let _lock = lock_theme_studio();
+    let _settings = SettingsBytesGuard::capture();
+    nebula_settings::persist_keys(&[
+        ("auto_check_updates", "1".into()),
+        ("auto_download_updates", "1".into()),
+    ])
+    .unwrap();
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        cx.set_global(crate::gpui_shell::config::Settings::load(ThemeName::Nord));
+    });
+    let (_, window) = cx.add_window_view(|window, cx| {
+        let pane = cx.new(|cx| SettingsPane::new(window, cx));
+        pane.update(cx, |pane, _| pane.active_section = 0);
+        gpui_component::Root::new(pane, window, cx)
+    });
+    window.simulate_resize(gpui::size(px(1280.0), px(900.0)));
+    window.update(|window, cx| {
+        window.refresh();
+        window.draw(cx).clear(cx);
+    });
+    assert!(window.debug_bounds("about-github").is_some(), "about page must be rendered");
+    for id in [
+        "about-check-updates",
+        "about-cached-update",
+        "about-releases",
+        "nebula-switch-auto-check-updates",
+        "nebula-switch-auto-download-updates",
+    ] {
+        assert!(window.debug_bounds(id).is_none(), "update entry {id}");
+    }
+}

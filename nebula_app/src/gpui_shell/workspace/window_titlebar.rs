@@ -15,19 +15,31 @@ pub(super) fn effective_title_bar_height(
     native_layout.map_or_else(|| title_bar_height(density), |layout| layout.height)
 }
 
-/// Prepaint records the actual pane column before any titlebar paint runs. Keep
-/// this cell for the workspace lifetime, so resizing and panel animations do not
-/// allocate a new shared slot or duplicate the body's layout calculations.
+/// Prepaint records the actual pane and left-drawer columns before any titlebar
+/// paint runs. Keep these cells for the workspace lifetime, so resizing and panel
+/// animations do not allocate a new shared slot or duplicate body layout math.
 #[derive(Clone, Default)]
-pub(super) struct TitleBarBackground(Rc<std::cell::Cell<Option<Bounds<Pixels>>>>);
+pub(super) struct TitleBarBackground {
+    pane: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+    left_drawer: Rc<std::cell::Cell<Option<Bounds<Pixels>>>>,
+}
 
 impl TitleBarBackground {
     pub(super) fn record_pane(&self, bounds: Bounds<Pixels>) {
-        self.0.set(Some(bounds));
+        self.pane.set(Some(bounds));
+    }
+
+    pub(super) fn clear_left_drawer(&self) {
+        self.left_drawer.set(None);
+    }
+
+    pub(super) fn record_left_drawer(&self, bounds: Bounds<Pixels>) {
+        self.left_drawer.set(Some(bounds));
     }
 
     fn element(&self, top_tabs: bool) -> gpui::Canvas<()> {
-        let pane_bounds = self.0.clone();
+        let pane_bounds = self.pane.clone();
+        let left_drawer_bounds = self.left_drawer.clone();
         canvas(
             |_, _, _| (),
             move |bounds, _, window, cx| {
@@ -51,14 +63,20 @@ impl TitleBarBackground {
                 } else {
                     shell
                 };
+                let left_drawer_x = left_drawer_bounds
+                    .get()
+                    .map(|drawer| f32::from(drawer.origin.x).clamp(title_left, pane_left));
 
                 // Adjacent bands receive alpha once. The actual pane bounds also
-                // account for a hidden sidebar and an open file tree.
-                for (left, right, color) in [
-                    (title_left, pane_left, tabs),
+                // account for a hidden sidebar and an open file tree on either side.
+                let tabs_right = left_drawer_x.unwrap_or(pane_left);
+                let bands = [
+                    (title_left, tabs_right, tabs),
+                    (tabs_right, pane_left, shell),
                     (pane_left, pane_right, content),
                     (pane_right, title_right, shell),
-                ] {
+                ];
+                for (left, right, color) in bands {
                     if right > left {
                         window.paint_quad(fill(
                             Bounds::new(
@@ -82,15 +100,20 @@ impl TitleBarBackground {
 pub(super) fn paint_pane_dividers(
     bounds: Bounds<Pixels>,
     file_tree: bool,
+    file_tree_on_left: bool,
     window: &mut Window,
     cx: &App,
 ) {
     let card = crate::gpui_shell::theme::PaneCardStyle::current(cx);
     let color = crate::gpui_shell::theme::card_divider_color(cx);
+    // The card's left edge separates it from whatever sits immediately left:
+    // the tab sidebar, or the files drawer when that drawer is on the left.
     if let Some(line) = pane_card_divider_bounds(bounds, card.divider, window.scale_factor()) {
         window.paint_quad(fill(line, color));
     }
-    if file_tree {
+    // A right-hand drawer needs its own seam inside the card. A left-hand
+    // drawer already meets the card on the line painted above.
+    if file_tree && !file_tree_on_left {
         let mut edge = bounds;
         edge.origin.x += edge.size.width;
         if let Some(mut line) = pane_card_divider_bounds(edge, card.divider, window.scale_factor())

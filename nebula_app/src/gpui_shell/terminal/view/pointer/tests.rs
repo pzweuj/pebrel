@@ -892,3 +892,56 @@ fn scrollbar_modes_never_capture_without_history_and_hover_clears_on_leave(
         assert!(!terminal.read_with(&window, |view, _| view.scrollbar_hovered));
     }
 }
+
+#[gpui::test]
+fn middle_click_paste_follows_setting_and_shift_bypasses_mouse_mode(cx: &mut TestAppContext) {
+    let (terminal, mut window, receiver) = link_fixture(cx, b"selected text\r\nprompt> ");
+    let point_at = cell(&terminal, &window, 2);
+
+    window.update(|_, cx| cx.global_mut::<Settings>().middle_click_paste = false);
+    window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
+    window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
+    draw(&mut window);
+    assert!(input_bytes(&receiver).is_empty(), "middle-click paste disabled must not paste");
+
+    window.update(|_, cx| cx.global_mut::<Settings>().middle_click_paste = true);
+    window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
+    window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
+    draw(&mut window);
+    assert_eq!(input_bytes(&receiver), b"before");
+
+    // In application mouse mode, plain middle-click reports to the app while Shift+middle-click pastes.
+    terminal.update(&mut window, |view, _| {
+        super::super::startup_tests::feed(view, b"\x1b[?1000h\x1b[?1006h");
+    });
+    window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
+    window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
+    draw(&mut window);
+    assert_eq!(input_bytes(&receiver), b"\x1b[<1;3;1M\x1b[<1;3;1m");
+
+    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    window.simulate_mouse_down(point_at, MouseButton::Middle, shift);
+    window.simulate_mouse_up(point_at, MouseButton::Middle, shift);
+    draw(&mut window);
+    assert_eq!(input_bytes(&receiver), b"before");
+
+    // With copy_on_select enabled, selecting text and middle-clicking pastes the selected text.
+    terminal.update(&mut window, |view, _| {
+        super::super::startup_tests::feed(view, b"\x1b[?1000l\x1b[?1006l");
+        view.copy_on_select = true;
+    });
+    let (start, end) = terminal.read_with(&window, |view, _| {
+        (
+            point(view.origin.x + view.cell_width * 0.25, view.origin.y + view.line_height * 0.5),
+            point(view.origin.x + view.cell_width * 7.75, view.origin.y + view.line_height * 0.5),
+        )
+    });
+    window.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    window.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    window.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    draw(&mut window);
+    window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
+    window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
+    draw(&mut window);
+    assert_eq!(input_bytes(&receiver), b"selected");
+}

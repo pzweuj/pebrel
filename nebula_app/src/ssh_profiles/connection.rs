@@ -30,6 +30,9 @@ pub struct SshConnectionOptions {
     pub proxy_username: String,
     pub jump_mode: SshHostJumpMode,
     pub jump_host: String,
+    /// Trusted X11 forwarding for new shells on this host. Windows uses the
+    /// display shipped with Pebrel; other platforms use the system display.
+    pub x11_forwarding: bool,
 }
 
 impl SshConnectionOptions {

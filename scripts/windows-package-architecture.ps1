@@ -4,12 +4,21 @@ function Assert-WindowsPackageArchitecture {
         [Parameter(Mandatory = $true)][string] $Root,
         [ValidateSet('x64', 'arm64')][string] $Architecture = 'x64',
         [string] $RuntimeDirectory = $Root,
-        [ValidateSet('pebrel-cli.exe', 'pebrel.com')][string] $CliExecutable = 'pebrel-cli.exe'
+        [ValidateSet('pebrel-cli.exe', 'pebrel.com')][string] $CliExecutable = 'pebrel-cli.exe',
+        [string] $X11Directory = (Join-Path $Root 'x11')
     )
     $machine = if ($Architecture -eq 'arm64') { 0xAA64 } else { 0x8664 }
-    foreach ($name in @('pebrel.exe', $CliExecutable, 'pebrel-hook.exe', 'conpty.dll', 'OpenConsole.exe')) {
+    $payloads = @('pebrel.exe', $CliExecutable, 'pebrel-hook.exe', 'conpty.dll', 'OpenConsole.exe') | ForEach-Object {
+        $name = $_
         $directory = if ($name -in @('pebrel.exe', $CliExecutable)) { $Root } else { $RuntimeDirectory }
-        $path = Join-Path $directory $name
+        Join-Path $directory $name
+    }
+    if (Test-Path -LiteralPath $X11Directory) {
+        $payloads += @(Get-ChildItem -LiteralPath $X11Directory -Recurse -File | Where-Object {
+            $_.Extension -in '.exe', '.dll'
+        } | ForEach-Object FullName)
+    }
+    foreach ($path in $payloads) {
         $stream = [IO.File]::OpenRead($path)
         $reader = [IO.BinaryReader]::new($stream)
         try {

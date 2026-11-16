@@ -146,6 +146,18 @@ fn scheduled_snapshot_scope() {
         size: Some(2),
         sha256: Some("a".repeat(64)),
     };
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        assert!(schedule(&asset, &[ordinary.clone()]).is_err());
+        assert!(!checkpoint_scheduled(&ordinary).unwrap());
+        let pending = update_root.join("install-next.json");
+        let old_plan = serde_json::to_vec(&asset).unwrap();
+        std::fs::write(&pending, &old_plan).unwrap();
+        assert!(!apply_scheduled());
+        assert_eq!(std::fs::read(&pending).unwrap(), old_plan);
+        std::fs::remove_file(pending).unwrap();
+        assert_eq!(crate::session::load_update_windows().unwrap()[0].tabs, ordinary.tabs);
+        return;
+    }
     let _job = super::super::begin_download_session(&asset).unwrap();
     super::super::session().as_mut().unwrap().status =
         super::super::DownloadStatus::Ready { path: update_root.join(name), bytes: 2 };

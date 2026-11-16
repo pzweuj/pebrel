@@ -30,6 +30,7 @@ pub(crate) mod copy_feedback;
 pub mod doc_tabs;
 pub mod file_drop;
 mod file_editor;
+mod file_icons;
 mod file_preview;
 mod font_loading;
 pub mod http;
@@ -236,6 +237,7 @@ pub fn run_shell(
         crate::mobile_connection::resume_saved();
     }
     let _runtime_server = runtime_server;
+    let _x11_display = crate::platform::x11_server::Resident::start();
     let _acrylic = crate::platform::acrylic::RunGuard::default();
     let _ai_config_guard = crate::ai_hook::spawn_config_guard();
     // 驻留由工作区持有隐藏窗口；真正关闭最后窗口时统一退出并回收服务。

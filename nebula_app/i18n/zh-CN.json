@@ -206,7 +206,7 @@
         "providers": "供应商 服务商 模型 补齐 预测",
         "ssh": "主机 远程 连接",
         "network": "网络 代理 连接",
-        "interaction": "交互 复制 粘贴 标签 面板 焦点跟随鼠标 自动聚焦",
+        "interaction": "交互 复制 粘贴 中键 标签 面板 文件抽屉 左右 焦点跟随鼠标 自动聚焦 SFTP 跟随",
         "keymap": "快速终端 独立窗口 已有窗口 按键映射 快捷键",
         "advanced": "高级 会话 托盘 恢复 自启动 静默启动 开机 登录",
         "backup": "云备份 云同步 云存储 备份 导出 恢复 坚果云 123云盘 群晖 快照",
@@ -220,6 +220,9 @@
       "description": "同步调整终端和设置页背景；数值越低越透明，文字不变。"
     },
     "quick_terminal_unavailable": "全局快捷键注册失败：{error}。请启用桌面的 GlobalShortcuts portal，或从托盘打开 Pebrel。",
+    "files_drawer_side": "文件抽屉",
+    "middle_click_paste": "中键粘贴",
+    "sftp_follow_session": "SFTP 跟随会话",
     "completion": {
       "history": {
         "title": "Pebrel 命令历史",
@@ -624,7 +627,9 @@
       "leave_empty_to_keep_the": "留空则保留已存密码",
       "user_bastion_n22_or_ssh": "user@bastion:22 或 SSH config 别名",
       "search_icons": "搜索图标…",
-      "backup_password_at_least_n8": "备份密码（至少 8 位）"
+      "backup_password_at_least_n8": "备份密码（至少 8 位）",
+      "files_on_the_right": "会话右侧",
+      "files_on_the_left": "会话左侧"
     },
     "help": {
       "changes_only_the_terminal_background": "只更改终端底色，设置页仍跟随主题。",
@@ -658,6 +663,9 @@
       "chooses_the_key_used_to": "选择填入建议时使用的按键。",
       "use_right_arrow_if_tab": "如果 Tab 与 Shell 自带补全冲突，可改用右方向键。",
       "copies_on_mouse_release_and": "松开鼠标自动复制，右键直接粘贴。",
+      "middle_click_pastes_clipboard": "中键把剪贴板粘贴进终端。",
+      "places_the_files_drawer": "文件抽屉可放在会话左侧或右侧。",
+      "sftp_follows_the_session": "SFTP 跟随当前会话所在目录。",
       "when_disabled_selection_does_not": "关闭后，选中不会自动复制；右键改为打开复制与粘贴菜单。",
       "asks_before_multiline_or_risky": "在普通 shell 中粘贴多行或高风险内容时先确认。",
       "checks_line_breaks_privileged_commands": "检查换行、提权命令和控制字符。Bracketed paste 模式与全屏程序不受此项保护；关闭后直接粘贴。",
@@ -1668,6 +1676,11 @@
     "fork_label": "分叉 · {title}",
     "fork_title": "{title} 分叉"
   },
+  "x11": {
+    "title": "X11 转发",
+    "description": "Windows 上由 Pebrel 自带显示。远端程序会打开为普通窗口。只作用于这台主机之后新开的会话。",
+    "unavailable": "X11 没有启动，会话仍然打开。{error}"
+  },
   "remote": {
     "locating": "正在定位远端目录…",
     "parent": "上一级",
@@ -1686,7 +1699,22 @@
     "busy_other": "另一主机正在传输：{destination}",
     "items": "{count} 项",
     "selected_items": "已选 {count} 项",
-    "clear_selection": "清空选择（Esc）"
+    "clear_selection": "清空选择（Esc）",
+    "copy_path": "复制路径",
+    "copied": "已复制",
+    "path_placeholder": "粘贴远端目录后按 Enter",
+    "path_invalid": "请输入远端目录路径",
+    "follow_session": "跟随会话"
+  },
+  "session_status": {
+    "users": "在线用户",
+    "login_times": "登录会话（服务器时间）",
+    "cpu": "CPU",
+    "memory": "内存",
+    "swap": "交换",
+    "disk": "磁盘",
+    "download": "下行",
+    "upload": "上行"
   },
   "backup_flow": {
     "password_notice": "Pebrel 不把这个密码写到磁盘，只在本次运行期间留在内存里，下次启动后第一次备份时再问。忘了它，已有的备份就解不开了。",

@@ -73,7 +73,16 @@ $manifest = [ordered]@{
     'licenses/LICENSE'                               = Join-Path $repo 'LICENSE'
     'licenses/LICENSE-LUA'                           = Join-Path $repo 'licenses\LICENSE-LUA'
     'licenses/LICENSE-MLUA'                          = Join-Path $repo 'licenses\LICENSE-MLUA'
+    'licenses/LICENSE-MATERIAL-ICON-THEME'           = Join-Path $repo 'licenses\LICENSE-MATERIAL-ICON-THEME'
     'licenses/THIRD-PARTY-NOTICES'                   = Join-Path $repo 'THIRD-PARTY-NOTICES'
+}
+
+$x11Runtime = Join-Path $repo 'packaging\windows\x11'
+if (Test-Path -LiteralPath $x11Runtime) {
+    Get-ChildItem -LiteralPath $x11Runtime -File -Recurse | ForEach-Object {
+        $relative = [IO.Path]::GetRelativePath($x11Runtime, $_.FullName).Replace('\', '/')
+        $manifest["x11/$relative"] = $_.FullName
+    }
 }
 
 function Assert-Manifest([string] $Root, [string[]] $Expected) {
@@ -162,7 +171,7 @@ if ($missing.Count -ne 0) {
 
 $packagedExe = $manifest['pebrel.exe']
 . (Join-Path $PSScriptRoot 'windows-package-architecture.ps1')
-Assert-WindowsPackageArchitecture -Root $targetRoot -Architecture $Architecture
+Assert-WindowsPackageArchitecture -Root $targetRoot -Architecture $Architecture -X11Directory $x11Runtime
 Assert-FreshBinaries
 if ($PackageBrand -eq 'Pebrel' -and (Get-Item -LiteralPath $packagedExe).VersionInfo.ProductName -ne 'Pebrel') {
     throw 'Pebrel packages require a freshly built Pebrel executable, not renamed Nebula binaries.'

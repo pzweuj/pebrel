@@ -41,6 +41,9 @@ pub(crate) fn current() -> Distribution {
 }
 
 pub(crate) fn require_direct_update() -> Result<(), String> {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return Err("Application updates are disabled in this build".into());
+    }
     match current() {
         Distribution::Direct => Ok(()),
         Distribution::Scoop => Err("Update this installation with: scoop update pebrel".into()),
@@ -148,8 +151,13 @@ mod tests {
     fn managed_process_stops_before_update_io() {
         const PROBE: &str = "PEBREL_DISTRIBUTION_TEST_CHILD";
         if let Some(marker) = std::env::var_os(PROBE) {
-            let expected =
-                if marker == "scoop" { Distribution::Scoop } else { Distribution::Unrecognized };
+            let expected = if marker == "scoop" {
+                Distribution::Scoop
+            } else if marker == "direct" {
+                Distribution::Direct
+            } else {
+                Distribution::Unrecognized
+            };
             assert_eq!(current(), expected);
             assert!(require_direct_update().is_err());
             assert!(crate::update_check::check_now().is_err());
@@ -170,24 +178,35 @@ mod tests {
                 assert!(!crate::update_download::handoff::installation_in_progress().unwrap());
                 crate::update_download::hydrate();
                 assert!(crate::update_download::cached_asset().is_none());
+                let (sender, receiver) = std::sync::mpsc::channel();
+                crate::update_check::spawn_gpui_once(sender);
+                assert!(matches!(
+                    receiver.try_recv(),
+                    Err(std::sync::mpsc::TryRecvError::Disconnected)
+                ));
             }
             let executable = std::env::current_exe().unwrap();
             assert!(!executable.parent().unwrap().join(".pebrel-update.nebula-lock").exists());
             return;
         }
         let executable = std::env::current_exe().unwrap();
-        for marker in ["scoop", "unknown"] {
+        for marker in ["direct", "scoop", "unknown"] {
             // 同卷硬链接避免复制大型测试二进制；子进程拥有独立 OnceLock 和更新状态。
             let root = tempfile::tempdir_in(executable.parent().unwrap()).unwrap();
             let child = root.path().join("distribution-test.exe");
-            std::fs::hard_link(&executable, &child).unwrap();
-            std::fs::write(root.path().join("pebrel-distribution"), marker).unwrap();
+            std::fs::hard_link(&executable, &child)
+                .or_else(|_| std::fs::copy(&executable, &child).map(|_| ()))
+                .unwrap();
+            if marker != "direct" {
+                std::fs::write(root.path().join("pebrel-distribution"), marker).unwrap();
+            }
             let output = std::process::Command::new(child)
                 .args([
                     "--exact",
                     "platform::distribution::tests::managed_process_stops_before_update_io",
                 ])
                 .env(PROBE, marker)
+                .env("PEBREL_CONFIG_DIR", root.path().join("config"))
                 .output()
                 .unwrap();
             assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stdout));

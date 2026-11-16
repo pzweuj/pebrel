@@ -115,6 +115,9 @@ pub(crate) fn cancel(asset: &UpdateAsset) {
 
 /// Runs off the UI thread. Cached files are always reverified before Ready.
 pub(crate) fn run(job: DownloadJob, language: UiLanguage) {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     if !job.is_current() {
         return;
     }
@@ -141,6 +144,9 @@ pub(crate) fn run(job: DownloadJob, language: UiLanguage) {
 /// Restore local update state without requiring a successful network check.
 /// Call once on a background executor; a user-started task always takes priority.
 pub(crate) fn hydrate() {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     if crate::platform::distribution::current().externally_managed() {
         return;
     }
@@ -161,6 +167,9 @@ pub(crate) fn hydrate() {
 }
 
 pub(crate) fn cached_asset() -> Option<UpdateAsset> {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return None;
+    }
     session().as_ref().map(|current| current.asset.clone())
 }
 

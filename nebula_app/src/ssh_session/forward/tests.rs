@@ -103,6 +103,7 @@ impl Fixture {
             super::super::ClientHandler {
                 host: "forward.test".into(),
                 port: 22,
+                pool_key: "fixture@forward.test:22".into(),
                 allow_prompt: false,
                 handshake: super::super::lifecycle::Handshake::default(),
                 known_hosts_path: Some(known_hosts),

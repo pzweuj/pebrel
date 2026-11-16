@@ -16,8 +16,10 @@ impl Render for NebulaWorkspace {
         // 终端卡几何取一次，布局与壳色带共用同一个实例——两处各取一次也算
         // 「各写一份」，主题在这一帧中途换掉就会出现半旧半新的卡缝。
         let card_style = crate::gpui_shell::theme::PaneCardStyle::current(cx);
+        self.titlebar_background.clear_left_drawer();
         let titlebar_background = self.titlebar_background.clone();
         let draw_file_divider = self.side_panel.open;
+        let files_on_left = self.files_panel_on_left(cx);
         let sidebar_logo_target_px =
             (TAB_LABEL_ICON_SIZE * window.scale_factor()).round().max(1.0) as u32;
         if let Some(images) = logos::poll_sidebar_logo_images(self, sidebar_logo_target_px, cx) {
@@ -279,6 +281,9 @@ impl Render for NebulaWorkspace {
                     .when(!top_tabs && !settings_active && !reader_focus, |row| {
                         row.child(self.render_sidebar_slot(window, cx))
                     })
+                    .when(self.files_panel_on_left(cx) && !reader_focus, |row| {
+                        row.child(self.render_side_panel_slot(window, cx))
+                    })
                     .child(
                         // 终端卡（一体化外壳）：唯一的结构分界。圆角、卡缝、投影、
                         // 竖线四项全部来自 `PaneCardStyle`（主题默认叠用户覆盖），
@@ -345,7 +350,11 @@ impl Render for NebulaWorkspace {
                                     |_, _, _| (),
                                     move |bounds, _, window, cx| {
                                         window_titlebar::paint_pane_dividers(
-                                            bounds, draw_file_divider, window, cx,
+                                            bounds,
+                                            draw_file_divider,
+                                            files_on_left,
+                                            window,
+                                            cx,
                                         );
                                     },
                                 )
@@ -353,7 +362,7 @@ impl Render for NebulaWorkspace {
                                 .inset_0(),
                             ),
                     )
-                    .when(!reader_focus, |row| {
+                    .when(!files_on_left && !reader_focus, |row| {
                         row.child(self.render_side_panel_slot(window, cx))
                     }),
             )

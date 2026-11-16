@@ -74,6 +74,7 @@ fn unknown_host_needs_explicit_trust_and_changed_keys_remain_rejected() {
     let mut handler = super::ClientHandler {
         host: "fixture.example".into(),
         port: 2200,
+        pool_key: "fixture@fixture.example:2200".into(),
         allow_prompt: false,
         handshake: super::lifecycle::Handshake::default(),
         known_hosts_path: Some(path.clone()),

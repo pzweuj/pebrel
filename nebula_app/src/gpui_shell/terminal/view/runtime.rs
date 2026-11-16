@@ -74,7 +74,14 @@ impl TerminalView {
         }
         if !self.command_running {
             // 已由 Enter/粘贴确立的命令沿用当时的判定：粘贴不会刷新 `last_committed`。
+            // Enter's reading span predates this asynchronously drained edge.
+            // History recall may also leave last_committed empty. Preserve an
+            // explicit capture instead of moving it to the grid's newer cursor.
+            let captured_pwd = self.pending_pwd.take();
             self.classify_submitted_command();
+            if captured_pwd.is_some() {
+                self.pending_pwd = captured_pwd;
+            }
         }
         self.mark_command_running();
         self.probe_missing_codex_session(cx);
@@ -401,6 +408,10 @@ impl TerminalView {
     /// 在确知提交行的边界判定交互式 SSH 登录：`ssh host make`、`-N`/`-T`/`-W` 等
     /// 没有登录 shell 的形态和复合命令都不算，保持原来的运行态与 spinner。
     pub(super) fn classify_submitted_command(&mut self) {
+        self.pending_pwd = self.ssh_destination.as_ref().and_then(|_| {
+            let session = self.session.as_ref()?;
+            super::cwd_report::PwdCapture::start(&self.suggest.last_committed, &session.term.lock())
+        });
         self.interactive_login =
             crate::ssh::ssh_destination(&self.suggest.last_committed).is_some();
     }

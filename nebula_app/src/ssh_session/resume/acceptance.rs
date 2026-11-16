@@ -57,7 +57,7 @@ fn isolated_openssh_reconnect_preserves_pooled_pane_targets() {
     runtime.block_on(async {
         tokio::time::timeout(Duration::from_secs(45), async {
             let handler = ClientHandler {
-                host: "127.0.0.1".into(), port, allow_prompt: false,
+                host: "127.0.0.1".into(), port, pool_key: format!("fixture@127.0.0.1:{port}"), allow_prompt: false,
                 handshake: lifecycle::Handshake::default(), known_hosts_path: Some(root.join("known_hosts")),
             };
             let mut transport = client::connect(Arc::new(client::Config::default()), ("127.0.0.1", port), handler).await.unwrap();

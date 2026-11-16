@@ -205,6 +205,8 @@ fn ui_language() -> crate::display::UiLanguage {
 pub enum TerminalViewEvent {
     /// OSC 标题变化，宿主应刷新 Tab 标题。
     TitleChanged,
+    /// An explicit pwd completed in this pane; follow can snap a manual listing back.
+    RemoteDirectoryQueried,
     /// Newly confirmed native recovery metadata must reach a checkpoint promptly.
     SessionIdentityChanged,
     /// 会话结束（子进程退出或 PTY 故障），只发一次。
@@ -397,6 +399,7 @@ pub struct TerminalView {
     /// 窗口只有一个任务栏按钮，谁被看着只有宿主知道。
     pub progress: crate::taskbar::TaskProgress,
     pending_runtime_submit: Option<crate::display::state::RuntimeSubmitBarrier>,
+    pending_pwd: Option<cwd_report::PwdCapture>,
     pending_shell_command: Option<startup_command::PendingShellCommand>,
     recovery: startup_command::SessionRecovery,
     pub(crate) session_launch: crate::session::LaunchSession,
@@ -659,6 +662,7 @@ impl TerminalView {
         }
         match event {
             TermEvent::Wakeup => {
+                self.observe_pwd_output(cx);
                 self.restore_shell_pointer_selection();
                 self.observe_reading_output(cx);
                 self.flush_pending_runtime_submit(cx);
@@ -820,6 +824,8 @@ impl TerminalView {
             // `None`（没带退出码的 133;D）都算过关。记在下面那道 barrier 之后：
             // 属于上一轮/初始化的那个边沿不能改写徽章。
             TermEvent::CommandDone { exit_code } => {
+                self.observe_pwd_output(cx);
+                self.pending_pwd = None;
                 // 新 PTY 初始化提示符也可能先发一个 CommandDone。Runtime
                 // 文本还在等待回显 barrier 时，这个边沿属于上一轮/初始化，
                 // 不能清掉尚未发送的 Enter 或把新请求提前投影成 idle。
@@ -889,6 +895,7 @@ impl TerminalView {
 
     /// `Exited` 只对宿主发一次；重复的退出信号（ChildExit 之后必然跟 Exit）只更新文案。
     fn mark_exited(&mut self, message: String, cx: &mut Context<Self>) {
+        self.pending_pwd = None;
         self.shell_pointer.revoke();
         self.application_mouse = None;
         self.cancel_pointer_gesture();

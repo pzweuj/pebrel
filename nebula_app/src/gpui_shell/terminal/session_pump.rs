@@ -44,12 +44,21 @@ pub(super) fn attach(
         // 上报流，350ms 门槛之类的视觉策略交给渲染端）。
         cx.spawn(async move |this, cx| {
             while let Some(stage) = stage_rx.next().await {
-                if this
-                    .update(cx, |view: &mut TerminalView, cx| {
-                        view.apply_ssh_stage(stage, cx);
+                let failed = this
+                    .update_in(cx, |view: &mut TerminalView, window, cx| {
+                        if let crate::ssh_session::SshStage::Notice(message) = stage {
+                            crate::gpui_shell::toast::toast(
+                                window,
+                                cx,
+                                crate::gpui_shell::toast::ToastKind::Warning,
+                                message,
+                            );
+                        } else {
+                            view.apply_ssh_stage(stage, cx);
+                        }
                     })
-                    .is_err()
-                {
+                    .is_err();
+                if failed {
                     break;
                 }
             }

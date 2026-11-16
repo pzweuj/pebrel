@@ -8,6 +8,9 @@ pub(crate) fn run_helper_if_requested() -> Option<i32> {
     if args.get(1).is_none_or(|arg| arg != "--internal-macos-update") {
         return None;
     }
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return Some(2);
+    }
     if args.len() != 3 {
         return Some(2);
     }

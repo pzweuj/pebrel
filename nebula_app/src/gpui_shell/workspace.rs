@@ -70,6 +70,7 @@ mod recipes;
 mod remote_files;
 mod remote_tab;
 mod rename;
+mod session_status;
 #[cfg(test)]
 use rename::apply_cancel_rename;
 use rename::{PaneRename, TabRename, apply_commit_rename};
@@ -738,12 +739,15 @@ pub struct NebulaWorkspace {
     /// 文件树右键：画在 workspace 根上，不进抽屉子孙树。见 `file_tree.rs`。
     file_tree_menu: Option<file_tree::FileTreeContextMenu>,
     file_tree_path: Option<file_tree::PathEditor>,
+    remote_path: Option<remote_files::RemotePathEditor>,
     /// 抽屉在 SSH pane 上的远端形态。与 `side_panel` 并存而不是替换它：
     /// 用户在远端 tab 和本地 tab 之间来回切时，两边的浏览位置都该留着。
     remote_browser: remote_files::RemoteBrowser,
     /// 远端列表的滚动位置。与本地树各用一个 handle：共用会让切换 pane 时
     /// 滚动条停在上一个列表的位置上，看起来像是列表内容对不上。
     remote_files_scroll: gpui::UniformListScrollHandle,
+    /// Login and resource strip for the focused SSH pane.
+    session_status: session_status::SessionStatus,
     /// 标签右键：同样画在根上。挂进标签行会让每一行都渲染同一份菜单，
     /// popover 阴影按标签数叠厚。见 `tab_menu.rs` 模块头。
     tab_menu: Option<tab_menu::TabContextMenu>,
@@ -984,8 +988,10 @@ impl NebulaWorkspace {
             file_tree_scroll: gpui::UniformListScrollHandle::new(),
             file_tree_menu: None,
             file_tree_path: None,
+            remote_path: None,
             remote_browser: remote_files::RemoteBrowser::default(),
             remote_files_scroll: gpui::UniformListScrollHandle::new(),
+            session_status: session_status::SessionStatus::default(),
             tab_menu: None,
             selection_context_menu: None,
             sidebar_logo_images: HashMap::new(),
@@ -1146,6 +1152,9 @@ impl NebulaWorkspace {
         self.sync_settings_layout(tab_reveal_instant(cx));
         self.sidebar_resizing = None;
         self.reveal_if_tray_disabled(cx);
+        if self.remote_browser.active() && self.sftp_follows_session(cx) {
+            self.snap_remote_browser_to_session_cwd(cx);
+        }
         cx.notify();
     }
 
@@ -2117,49 +2126,6 @@ impl NebulaWorkspace {
             .unwrap_or_else(|| "tab".to_owned());
         let export = crate::session::Session::new(0, vec![tab]);
         self.prompt_save_workspace(export, &stem, window, cx);
-    }
-
-    /// Terminal tab 的内容区：单叶直渲、缩放态聚焦 pane 满卡，否则按
-    /// 分屏树递归铺陈。
-    fn render_terminal_tab(&self, tab_ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
-        let Some(WorkspaceTab::Terminal { tree, panes, focused, zoomed, broadcast }) =
-            self.tabs.get(tab_ix)
-        else {
-            return div().into_any_element();
-        };
-        if *zoomed || tree.is_leaf() {
-            let Some(pane) = self.tabs[tab_ix].primary_terminal_pane() else {
-                return div().into_any_element();
-            };
-            let ordinal = pane_header::pane_order(tree)
-                .iter()
-                .position(|id| *id == pane.id)
-                .map_or(1, |at| at + 1);
-            return self.render_terminal_pane(
-                tab_ix,
-                pane,
-                ordinal,
-                pane_header::header_visible(panes.len()),
-                true,
-                *zoomed,
-                *broadcast,
-                pane_header::HeaderCorners { top_left: true, top_right: true },
-                cx,
-            );
-        }
-        let mut path = Vec::new();
-        let order = pane_header::pane_order(tree);
-        self.render_split_node(
-            tab_ix,
-            tree,
-            &mut path,
-            panes,
-            *focused,
-            &order,
-            *broadcast,
-            pane_header::HeaderCorners { top_left: true, top_right: true },
-            cx,
-        )
     }
 
     /// 递归渲染分屏树。Split 节点 = flex 容器：first 占 `relative(ratio)`、

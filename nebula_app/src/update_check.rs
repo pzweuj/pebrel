@@ -122,6 +122,9 @@ struct GitHubReleaseAsset {
 /// already knows how to display, deduplicate and dismiss.
 #[cfg(feature = "legacy-shell")]
 pub fn spawn_once(proxy: EventLoopProxy<Event>) {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     if crate::platform::distribution::current().externally_managed() {
         return;
     }
@@ -160,6 +163,9 @@ pub fn spawn_once(proxy: EventLoopProxy<Event>) {
 /// 轻通知，再由用户决定是否打开更新详情弹窗。
 #[cfg(feature = "gpui-shell")]
 pub fn spawn_gpui_once(sender: std::sync::mpsc::Sender<crate::gpui_shell::GpuiShellEvent>) {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     if crate::platform::distribution::current().externally_managed() {
         return;
     }

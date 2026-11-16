@@ -97,6 +97,24 @@ struct Loopback {
 impl server::Handler for Loopback {
     type Error = russh::Error;
 
+    async fn x11_request(
+        &mut self,
+        channel: ChannelId,
+        _single_connection: bool,
+        protocol: &str,
+        cookie: &str,
+        _screen: u32,
+        session: &mut Session,
+    ) -> Result<(), Self::Error> {
+        assert_eq!(protocol, "MIT-MAGIC-COOKIE-1");
+        assert_eq!(cookie.len(), 32);
+        if self.mode == Mode::RejectShell {
+            session.channel_failure(channel)
+        } else {
+            session.channel_success(channel)
+        }
+    }
+
     async fn auth_none(&mut self, _user: &str) -> Result<Auth, Self::Error> {
         Ok(Auth::Accept)
     }
@@ -670,6 +688,22 @@ impl Fixture {
 }
 
 #[test]
+fn x11_forwarding_requires_the_server_to_accept_the_request() {
+    check(async {
+        for mode in [Mode::Open, Mode::RejectShell] {
+            let fixture = Fixture::new(mode).await;
+            let acquired = fixture.connect().await;
+            let mut channel = own_channel(acquired.session.channel_open_session().await.unwrap());
+            let accepted =
+                channel.request_x11(false, "MIT-MAGIC-COOKIE-1", &"01".repeat(16), 0).await;
+            assert_eq!(accepted.is_ok(), mode == Mode::Open);
+            drop(channel);
+            fixture.forget(&acquired.session).await;
+        }
+    });
+}
+
+#[test]
 fn integration_exec_routes_only_the_current_channel_token_without_accept_env() {
     check(async {
         let mut fixture = Fixture::new(Mode::Integration).await;
@@ -1091,6 +1125,7 @@ fn hung_channel_does_not_lock_reuse_and_fresh_connection_can_retry() {
             size(),
             None,
             None,
+            false,
             &events,
             Duration::from_millis(100),
         );

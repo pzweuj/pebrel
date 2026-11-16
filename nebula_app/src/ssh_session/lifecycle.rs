@@ -184,11 +184,13 @@ pub(super) async fn run<H: SshEventHost>(
         .await??;
         let mut acquired =
             super::authenticated_session_at(&resolved, &profile, Some(&event_proxy), 0).await?;
-        let (mut channel, hook_token) = match open_shell(
+        let x11 = profile.connection.x11_forwarding;
+        let (mut channel, hook_token) = match open_shell_forwarding(
             &acquired,
             initial_size,
             initial_remote_cwd.as_deref(),
             resume_target.as_ref(),
+            x11,
             &event_proxy,
         )
         .await
@@ -200,11 +202,12 @@ pub(super) async fn run<H: SshEventHost>(
                 acquired =
                     super::authenticated_session_at(&resolved, &profile, Some(&event_proxy), 0)
                         .await?;
-                open_shell(
+                open_shell_forwarding(
                     &acquired,
                     initial_size,
                     initial_remote_cwd.as_deref(),
                     resume_target.as_ref(),
+                    x11,
                     &event_proxy,
                 )
                 .await?
@@ -289,6 +292,7 @@ pub(super) struct ShellChannel {
     identity: Arc<std::sync::Mutex<Option<resume::PtyIdentity>>>,
     identity_input: Option<resume::IdentityInput>,
     tmux_helper: Option<String>,
+    x11: Option<crate::platform::x11_server::DisplayLease>,
 }
 
 /// The same close-on-drop ownership applies to shell and short-lived exec channels.
@@ -302,10 +306,27 @@ pub(super) fn own_channel(channel: Channel<client::Msg>) -> ShellChannel {
         identity: Default::default(),
         identity_input: None,
         tmux_helper: None,
+        x11: None,
     }
 }
 
 impl ShellChannel {
+    pub(super) async fn request_x11(
+        &mut self,
+        single_connection: bool,
+        protocol: &str,
+        cookie: &str,
+        screen: u32,
+    ) -> Result<(), SessionError> {
+        self.channel
+            .as_ref()
+            .expect("SSH channel exists until drop")
+            .request_x11(true, single_connection, protocol, cookie, screen)
+            .await
+            .map_err(|error| format!("X11 request failed: {error}"))?;
+        wait_request_success(self, "X11").await
+    }
+
     pub(super) async fn wait(&mut self) -> Option<ChannelMsg> {
         self.reader.wait().await
     }
@@ -363,7 +384,19 @@ async fn open_shell<H: SshEventHost>(
     target: Option<&ResumeTarget>,
     progress: &H,
 ) -> Result<(ShellChannel, String), SessionError> {
-    open_shell_with_budget(acquired, size, remote_cwd, target, progress, NETWORK_TIMEOUT).await
+    open_shell_with_budget(acquired, size, remote_cwd, target, false, progress, NETWORK_TIMEOUT)
+        .await
+}
+
+async fn open_shell_forwarding<H: SshEventHost>(
+    acquired: &super::AcquiredSession,
+    size: WindowSize,
+    remote_cwd: Option<&str>,
+    target: Option<&ResumeTarget>,
+    x11: bool,
+    progress: &H,
+) -> Result<(ShellChannel, String), SessionError> {
+    open_shell_with_budget(acquired, size, remote_cwd, target, x11, progress, NETWORK_TIMEOUT).await
 }
 
 async fn open_shell_with_budget<H: SshEventHost>(
@@ -371,6 +404,7 @@ async fn open_shell_with_budget<H: SshEventHost>(
     size: WindowSize,
     remote_cwd: Option<&str>,
     target: Option<&ResumeTarget>,
+    x11: bool,
     progress: &H,
     budget: Duration,
 ) -> Result<(ShellChannel, String), SessionError> {
@@ -380,7 +414,15 @@ async fn open_shell_with_budget<H: SshEventHost>(
     let result = network_with_budget(
         "shell channel",
         budget,
-        open_shell_channel(&acquired.session, size, remote_cwd, target),
+        open_shell_channel(
+            &acquired.session,
+            &acquired.key,
+            size,
+            remote_cwd,
+            target,
+            x11,
+            progress,
+        ),
     )
     .await;
     if result.is_ok() {
@@ -389,17 +431,34 @@ async fn open_shell_with_budget<H: SshEventHost>(
     result
 }
 
-async fn open_shell_channel(
+fn report_x11_unavailable<H: SshEventHost>(progress: &H, error: &str) {
+    let language =
+        crate::i18n::LanguagePreference::from(nebula_settings::RuntimeSettings::load().language)
+            .resolved();
+    let message = language.format(crate::i18n::Message::X11Unavailable, &[("error", error)]);
+    super::report_stage(Some(progress), super::SshStage::Notice(message));
+}
+
+async fn open_shell_channel<H: SshEventHost>(
     session: &SharedSession,
+    pool_key: &str,
     size: WindowSize,
     remote_cwd: Option<&str>,
     target: Option<&ResumeTarget>,
+    x11: bool,
+    progress: &H,
 ) -> Result<(ShellChannel, String), SessionError> {
     let hook_token = super::remote_hook_token()?;
     let posix = resume::supported(session).await;
     let integration =
         if posix { super::integration::prepare(session, &hook_token).await } else { None };
     let mut channel = own_channel(session.channel_open_session().await?);
+    if x11 {
+        match super::x11::request(pool_key, &mut channel).await {
+            Ok(lease) => channel.x11 = Some(lease),
+            Err(error) => report_x11_unavailable(progress, &error),
+        }
+    }
     channel
         .request_pty(
             true,
@@ -428,8 +487,16 @@ async fn open_shell_channel(
             },
             Err(error) => {
                 log::debug!("SSH integrated shell rejected; opening ordinary shell: {error}");
+                let x11_lease = channel.x11.take();
                 channel.finish().await?;
                 channel = own_channel(session.channel_open_session().await?);
+                channel.x11 = x11_lease;
+                if channel.x11.is_some()
+                    && let Err(error) = super::x11::request_again(pool_key, &mut channel).await
+                {
+                    report_x11_unavailable(progress, &error);
+                    channel.x11 = None;
+                }
                 channel
                     .request_pty(
                         true,

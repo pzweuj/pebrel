@@ -1,0 +1,5 @@
+Material Icon Theme
+https://github.com/material-extensions/vscode-material-icon-theme
+Commit: 3929c5487ca03352f31cfba675b367448449094d
+License: MIT (licenses/LICENSE-MATERIAL-ICON-THEME)
+Selected original SVG files; not modified.

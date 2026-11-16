@@ -5,6 +5,156 @@ use std::cell::{Cell, RefCell};
 use std::rc::Rc;
 
 #[gpui::test]
+fn pwd_enter_before_ssh_echo_completes_keeps_the_output_span(cx: &mut TestAppContext) {
+    for prefix in ["", "p", "pw"] {
+        for prompt in ["dev@host:~$ ".to_owned(), format!("{}$ ", "x".repeat(76))] {
+            let (view, window, _) = open(cx);
+            view.update(window, |view, cx| {
+                let _input = view.install_remote_files_test_session("fixture@example.invalid", cx);
+                feed(view, format!("{prompt}{prefix}").as_bytes());
+                view.suggest.line_buf = "pwd".into();
+                view.commit_line(cx);
+                assert!(view.pending_pwd.is_some(), "prompt={prompt:?}, echo={prefix:?}");
+                feed(
+                    view,
+                    format!("{}\r\n/srv/data\r\n{prompt}", &"pwd"[prefix.len()..]).as_bytes(),
+                );
+                view.process_event(TermEvent::CommandStart, cx);
+                view.process_event(TermEvent::Wakeup, cx);
+                assert_eq!(view.remote_cwd().as_deref(), Some("/srv/data"));
+            });
+        }
+    }
+}
+
+#[gpui::test]
+fn pwd_text_in_foreground_stdin_is_not_a_directory_query(cx: &mut TestAppContext) {
+    for text in ["pwd", ">>> pwd", "echo /tmp/pwd"] {
+        let (view, window, _) = open(cx);
+        view.update(window, |view, cx| {
+            let _input = view.install_remote_files_test_session("fixture@example.invalid", cx);
+            view.mark_command_running();
+            view.running_program = Some("cat".into());
+            feed(view, text.as_bytes());
+            view.suggest.line_buf = "pwd".into();
+            view.commit_line(cx);
+            assert!(view.pending_pwd.is_none(), "stdin {text:?}");
+            feed(view, b"\r\n/unrelated/path\r\n");
+            view.process_event(TermEvent::Wakeup, cx);
+            assert!(view.remote_cwd().is_none());
+        });
+    }
+}
+
+#[gpui::test]
+fn pwd_from_history_and_uninstrumented_prompts_survives_preexec_titles(cx: &mut TestAppContext) {
+    for prompt in ["❯ ", "(base) [dev@host data]$ ", "dev@host:/srv/data$ "] {
+        let (view, window, _) = open(cx);
+        view.update(window, |view, cx| {
+            let _input = view.install_remote_files_test_session("fixture@example.invalid", cx);
+            for path in ["/srv/data", "/srv/other", "/srv/other"] {
+                feed(view, format!("\r\n{prompt}pwd").as_bytes());
+                // Up/Down history navigation invalidates the input mirror.
+                crate::display::nebula_clear_line(&mut view.suggest);
+                view.commit_line(cx);
+                assert!(view.pending_pwd.is_some(), "capture recalled pwd at {prompt:?}");
+                // A shell's preexec title can precede the output Wakeup.
+                view.process_event(TermEvent::Title("NEBULA|/old||pwd".into()), cx);
+                feed(view, format!("\r\n{path}\r\n{prompt}").as_bytes());
+                // Protocol events are drained after the shared grid has already
+                // advanced through the whole output batch.
+                view.process_event(TermEvent::CommandStart, cx);
+                view.process_event(TermEvent::Wakeup, cx);
+                assert_eq!(view.remote_cwd().as_deref(), Some(path));
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn repeated_pwd_after_a_silent_cd_does_not_wait_for_the_activity_watchdog(cx: &mut TestAppContext) {
+    for (initial, changed) in [
+        ("dev@host:~$ ", "dev@host:/srv/data$ "),
+        ("[dev@host ~]$ ", "[dev@host data]$ "),
+        ("❯ ", "❯ "),
+    ] {
+        let (view, window, _) = open(cx);
+        view.update(window, |view, cx| {
+            let _input = view.install_remote_files_test_session("fixture@example.invalid", cx);
+            for (command, prompt, output) in [
+                ("pwd", initial, "/home/dev"),
+                ("cd /srv/data", initial, ""),
+                ("pwd", changed, "/srv/data"),
+                ("pwd", changed, "/srv/data"),
+            ] {
+                feed(view, format!("\r\n{prompt}").as_bytes());
+                if prompt == "❯ " {
+                    let mut term = view.session.as_ref().unwrap().term.lock();
+                    term.nebula_add_prompt_mark();
+                    term.nebula_mark_prompt_input();
+                }
+                feed(view, command.as_bytes());
+                view.suggest.line_buf = command.into();
+                view.commit_line(cx);
+                assert_eq!(view.suggest.last_committed, command);
+                if command == "pwd" {
+                    assert!(view.pending_pwd.is_some(), "each pwd needs a fresh capture");
+                    feed(view, format!("\r\n{output}\r\n").as_bytes());
+                    view.process_event(TermEvent::Wakeup, cx);
+                    assert_eq!(view.remote_cwd().as_deref(), Some(output));
+                }
+            }
+        });
+    }
+}
+
+#[gpui::test]
+fn a_known_agent_prompt_does_not_rearm_pwd_even_with_an_input_boundary(cx: &mut TestAppContext) {
+    let (view, window, _) = open(cx);
+    view.update(window, |view, cx| {
+        let _input = view.install_remote_files_test_session("fixture@example.invalid", cx);
+        view.running_program = Some("codex".into());
+        view.suggest.last_committed = "codex".into();
+        view.suggest.pending_command_prompt = Some("❯".into());
+        view.mark_command_running();
+        feed(view, "❯ ".as_bytes());
+        {
+            let mut term = view.session.as_ref().unwrap().term.lock();
+            term.nebula_add_prompt_mark();
+            term.nebula_mark_prompt_input();
+        }
+        feed(view, b"pwd");
+        view.suggest.line_buf = "pwd".into();
+        view.commit_line(cx);
+        assert!(view.pending_pwd.is_none());
+        assert_eq!(view.suggest.last_committed, "codex");
+        assert_eq!(view.running_program.as_deref(), Some("codex"));
+    });
+}
+
+#[gpui::test]
+fn submitted_pwd_updates_only_its_remote_pane_after_output(cx: &mut TestAppContext) {
+    let (view, window, _) = open(cx);
+    view.update(window, |view, cx| {
+        let _input = view.install_remote_files_test_session("fixture@example.invalid", cx);
+        feed(view, b"user@host:~$ pwd");
+        view.suggest.line_buf = "pwd".into();
+        view.commit_line(cx);
+        assert!(view.pending_pwd.is_some());
+        feed(view, b"\r\n/srv/Team Projects");
+        view.process_event(TermEvent::Wakeup, cx);
+        assert_eq!(view.remote_cwd(), None);
+        feed(view, b"/data\r\nuser@host:~$ ");
+        view.process_event(TermEvent::Wakeup, cx);
+        assert_eq!(view.remote_cwd().as_deref(), Some("/srv/Team Projects/data"));
+        assert!(view.pending_pwd.is_none());
+        feed(view, b"echo /tmp\r\n/tmp\r\n$ ");
+        view.process_event(TermEvent::Wakeup, cx);
+        assert_eq!(view.remote_cwd().as_deref(), Some("/srv/Team Projects/data"));
+    });
+}
+
+#[gpui::test]
 fn runtime_submission_codex_prompt_does_not_depend_on_a_repaint(cx: &mut TestAppContext) {
     let (view, window, receiver) = open(cx);
     view.update(window, |view, cx| {

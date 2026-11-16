@@ -46,6 +46,20 @@ impl TerminalView {
         self.process_event(event, cx);
     }
 
+    pub(crate) fn remote_files_test_pwd(&mut self, path: &str, cx: &mut Context<Self>) {
+        feed(self, b"\r\nuser@host:~$ pwd");
+        self.suggest.line_buf = "pwd".into();
+        self.commit_line(cx);
+        assert!(self.pending_pwd.is_some());
+        self.process_event(TermEvent::Title("NEBULA|/stale||pwd".into()), cx);
+        feed(self, format!("\r\n{path}\r\nuser@host:~$ ").as_bytes());
+        self.process_event(TermEvent::Wakeup, cx);
+    }
+
+    pub(crate) fn forget_reported_cwd_for_test(&mut self) {
+        self.cwd.clear();
+    }
+
     pub(crate) fn completion_test_state(
         &self,
     ) -> (String, bool, usize, bool, crate::display::CompletionStyle) {

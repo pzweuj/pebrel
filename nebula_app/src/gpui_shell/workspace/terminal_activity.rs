@@ -17,6 +17,59 @@ impl WorkspaceTab {
 }
 
 impl NebulaWorkspace {
+    /// Terminal tab 的内容区：单叶直渲、缩放态聚焦 pane 满卡，否则按
+    /// 分屏树递归铺陈。就绪的 SSH 会话在卡片底部加登录和资源条。
+    pub(super) fn render_terminal_tab(
+        &mut self,
+        tab_ix: usize,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        self.observe_session_status(cx);
+        let body = self.render_terminal_layout(tab_ix, cx);
+        self.attach_session_status(body, cx)
+    }
+
+    fn render_terminal_layout(&self, tab_ix: usize, cx: &mut Context<Self>) -> gpui::AnyElement {
+        let Some(WorkspaceTab::Terminal { tree, panes, focused, zoomed, broadcast }) =
+            self.tabs.get(tab_ix)
+        else {
+            return div().into_any_element();
+        };
+        if *zoomed || tree.is_leaf() {
+            let Some(pane) = self.tabs[tab_ix].primary_terminal_pane() else {
+                return div().into_any_element();
+            };
+            let ordinal = pane_header::pane_order(tree)
+                .iter()
+                .position(|id| *id == pane.id)
+                .map_or(1, |at| at + 1);
+            return self.render_terminal_pane(
+                tab_ix,
+                pane,
+                ordinal,
+                pane_header::header_visible(panes.len()),
+                true,
+                *zoomed,
+                *broadcast,
+                pane_header::HeaderCorners { top_left: true, top_right: true },
+                cx,
+            );
+        }
+        let mut path = Vec::new();
+        let order = pane_header::pane_order(tree);
+        self.render_split_node(
+            tab_ix,
+            tree,
+            &mut path,
+            panes,
+            *focused,
+            &order,
+            *broadcast,
+            pane_header::HeaderCorners { top_left: true, top_right: true },
+            cx,
+        )
+    }
+
     pub(super) fn on_terminal_event(
         &mut self,
         view: &Entity<TerminalView>,
@@ -38,7 +91,7 @@ impl NebulaWorkspace {
             },
             // OSC 7 cwd 与标题共用这条事件。只有当前聚焦 pane 能驱动共享文件树；
             // 后台 pane 的提示符更新不能把前台目录覆盖掉。
-            TerminalViewEvent::TitleChanged => {
+            TerminalViewEvent::TitleChanged | TerminalViewEvent::RemoteDirectoryQueried => {
                 let is_active_pane = self
                     .tabs
                     .get(self.active)
@@ -46,6 +99,11 @@ impl NebulaWorkspace {
                     .is_some_and(|active| active.entity_id() == view.entity_id());
                 if is_active_pane {
                     self.sync_side_panel_to_active(false, cx);
+                    if matches!(event, TerminalViewEvent::RemoteDirectoryQueried)
+                        && self.sftp_follows_session(cx)
+                    {
+                        self.snap_remote_browser_to_session_cwd(cx);
+                    }
                 }
                 cx.notify();
             },

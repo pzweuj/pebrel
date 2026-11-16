@@ -29,6 +29,8 @@ pub(crate) fn resident_launch_directory(
 mod console;
 #[cfg(feature = "gpui-shell")]
 pub(crate) mod first_frame;
+#[cfg(all(windows, test, feature = "gpui-test-support"))]
+mod flash_tests;
 #[cfg(any(unix, test))]
 mod login;
 

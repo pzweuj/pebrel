@@ -133,6 +133,10 @@ impl SshConnectState {
                 SshStage::OpenShell => self.push_log("shell     channel + pty + shell".to_owned()),
                 SshStage::Ready => self.push_log("ready     session established".to_owned()),
                 SshStage::Failed(message) => self.push_log(format!("error     {message}")),
+                SshStage::Notice(message) => {
+                    self.push_log(format!("x11       {message}"));
+                    return;
+                },
             }
         }
         if let SshStage::Failed(message) = &stage {
@@ -199,7 +203,7 @@ impl SshConnectState {
             SshStage::Resolve => 0,
             SshStage::Connect => 1,
             SshStage::Authenticate => 2,
-            SshStage::OpenShell | SshStage::Ready => 3,
+            SshStage::OpenShell | SshStage::Ready | SshStage::Notice(_) => 3,
             // 失败停在它失败的那一格；解析阶段就失败的情况归到第 0 格。
             SshStage::Failed(_) => self.fill.round().clamp(0.0, 3.0) as usize,
         }
@@ -1068,6 +1072,7 @@ pub(crate) fn stage_message(stage: &SshStage, language: UiLanguage) -> String {
         SshStage::OpenShell => language.pick("正在打开会话…", "Opening shell…"),
         SshStage::Ready => language.pick("已连接", "Connected"),
         SshStage::Failed(_) => language.pick("连接失败", "Connection failed"),
+        SshStage::Notice(message) => message.as_str(),
     }
     .to_owned()
 }

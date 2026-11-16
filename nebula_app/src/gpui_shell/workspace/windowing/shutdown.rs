@@ -8,6 +8,9 @@ pub(crate) fn quit_all(cx: &mut App) {
 }
 
 pub(crate) fn quit_for_update(asset: crate::update_check::UpdateAsset, cx: &mut App) {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return;
+    }
     request_quit(Some(asset), cx);
 }
 
@@ -15,6 +18,7 @@ pub(crate) fn schedule_update(
     asset: &crate::update_check::UpdateAsset,
     cx: &mut App,
 ) -> Result<(), String> {
+    crate::platform::distribution::require_direct_update()?;
     save_combined_session(cx, false).map_err(|error| error.to_string())?;
     let windows = cx
         .global::<WindowRegistry>()

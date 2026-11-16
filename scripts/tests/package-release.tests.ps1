@@ -76,6 +76,7 @@ try {
         'licenses/LICENSE'
         'licenses/LICENSE-LUA'
         'licenses/LICENSE-MLUA'
+        'licenses/LICENSE-MATERIAL-ICON-THEME'
         'licenses/THIRD-PARTY-NOTICES'
         'pebrel.exe'
         'pebrel.com'
@@ -85,6 +86,19 @@ try {
         'skills/pebrel-runtime/SKILL.md'
         'skills/pebrel-runtime/agents/openai.yaml'
     ) | Sort-Object
+
+    $optionalRuntime = Join-Path $repo 'packaging\windows\x11'
+    if (Test-Path -LiteralPath $optionalRuntime) {
+        $expected += @(Get-ChildItem -LiteralPath $optionalRuntime -Recurse -File | ForEach-Object {
+            'x11/' + [IO.Path]::GetRelativePath($optionalRuntime, $_.FullName).Replace('\', '/')
+        })
+        $expected = @($expected | Sort-Object)
+        if (Test-Path -LiteralPath (Join-Path $optionalRuntime 'yserver\yserver.exe')) {
+            foreach ($required in @('x11/yserver/yserver.exe', 'x11/yserver/LICENSE.txt', 'x11/yserver/xkb/rules/evdev')) {
+                if ($required -notin $actual) { throw "Incomplete optional yserver payload: $required" }
+            }
+        }
+    }
 
     $difference = @(Compare-Object -ReferenceObject $expected -DifferenceObject $actual)
     if ($difference.Count -ne 0) {

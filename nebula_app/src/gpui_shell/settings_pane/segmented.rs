@@ -104,6 +104,7 @@ pub(super) fn supports(key: &str) -> bool {
         key,
         "density"
             | "tabs_position"
+            | "files_panel_side"
             | "tab_reveal"
             | "new_tab_position"
             | "vcs_display"

@@ -27,6 +27,14 @@ The embedded Latin Modern Math font is distributed under the GUST Font
 License 1.0. Its complete license text is included as
 licenses/LICENSE-LATIN-MODERN-MATH.
 
+Windows X11 forwarding can ship VcXsrv, the X.Org X server Windows port
+(https://github.com/marchaesen/vcxsrv), as a separate program under x11/.
+It is not linked into pebrel.exe. Its license is GPL-compatible with this
+project; the corresponding source is the tagged upstream release named by
+scripts/fetch-vcxsrv.ps1. Its GPLv3 text is included at x11/vcxsrv/COPYING;
+x11/vcxsrv/SOURCE.txt links the corresponding source archive, dependencies
+and build scripts. A package built without that fetch does not include VcXsrv.
+
 The SSH Bash login-startup replay in nebula_app/res/shell/bashrc adapts
 the source-observation startup logic by l0ng-ai (revision 4da3868,
 shell_integration.rs).
@@ -427,3 +435,7 @@ The complete Maple face remains unchanged and separately selectable.
 nebula-waiting-hand.svg preserves the U+F256 outline from that bundled font,
 translated and flipped into a centered SVG viewBox without changing the outline.
 Copyright (c) 2022, subframe7536. See licenses/LICENSE-PEBREL-SYMBOLS (OFL 1.1).
+Material Icon Theme (selected original SVG file icons)
+https://github.com/material-extensions/vscode-material-icon-theme
+MIT license; see licenses/LICENSE-MATERIAL-ICON-THEME.
+The selected asset commit is recorded in assets/file-icons/material/SOURCE.txt.

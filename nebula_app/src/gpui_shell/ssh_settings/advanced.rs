@@ -549,6 +549,33 @@ impl SettingsPane {
                     ), cx).mt_3()),
             )
             .child(
+                h_flex()
+                    .mt_5()
+                    .pt_5()
+                    .border_t_1()
+                    .border_color(theme.border)
+                    .items_center()
+                    .gap_3()
+                    .child(
+                        v_flex()
+                            .flex_1()
+                            .min_w_0()
+                            .gap_1()
+                            .child(div().text_xs().font_medium().child(language.text(crate::i18n::Message::X11Title)))
+                            .child(editor_hint(language.text(crate::i18n::Message::X11Description), cx)),
+                    )
+                    .child(
+                        crate::gpui_shell::widgets::NebulaSwitch::new("ssh-x11-forwarding")
+                            .checked(editor.connection.x11_forwarding)
+                            .on_click(cx.listener(|this, checked: &bool, _, cx| {
+                                if let Some(editor) = this.ssh_editor.as_mut() {
+                                    editor.connection.x11_forwarding = *checked;
+                                }
+                                this.touch_ssh_editor(cx);
+                            })),
+                    ),
+            )
+            .child(
                 v_flex().mt_5().p_3().gap_2().rounded_md().bg(theme.group_box)
                     .child(div().text_xs().font_medium().child(language.pick("连接规则预览", "Connection rule preview")))
                     .child(editor_hint(route.unwrap_or_else(|| language.pick(

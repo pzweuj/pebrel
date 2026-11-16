@@ -492,6 +492,22 @@ impl SftpBrowseSession {
         }
         result
     }
+
+    pub(crate) async fn canonicalize_home(&self) -> Result<String, String> {
+        let mut slot = self.session.lock().await;
+        let session = match slot.take() {
+            Some(session) => session,
+            None => crate::ssh_session::open_sftp(&self.destination)
+                .await
+                .map_err(|err| format!("无法连接 {}：{err}", self.destination))?,
+        };
+        let result =
+            session.canonicalize(".").await.map_err(|err| format!("无法定位远端主目录：{err}"));
+        if result.is_ok() {
+            *slot = Some(session);
+        }
+        result
+    }
 }
 
 impl TransferObserver for TaskContext {

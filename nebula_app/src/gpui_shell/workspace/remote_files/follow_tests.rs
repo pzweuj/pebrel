@@ -3,7 +3,7 @@
 
 use super::*;
 use crate::gpui_shell::terminal::view::{TerminalLaunch, TerminalView};
-use gpui::{Entity, TestAppContext, VisualTestContext};
+use gpui::{BorrowAppContext as _, Entity, TestAppContext, VisualTestContext};
 use gpui_component::Root;
 use nebula_terminal::event::Event;
 use russh_sftp::protocol::{File, Handle, Name, Status, StatusCode};
@@ -296,6 +296,31 @@ fn focus(fixture: &mut Fixture, tab: usize) {
 }
 
 #[gpui::test]
+fn explicit_pwd_snaps_the_focused_sftp_listing_back_to_the_reported_path(cx: &mut TestAppContext) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.navigate_remote("/manual".into(), cx);
+    });
+    listed(&mut fixture, "/manual");
+    fixture.terminals[0].update(&mut fixture.window, |view, cx| {
+        view.remote_files_test_pwd("/srv/Alpha 中", cx);
+    });
+    listed(&mut fixture, "/srv/Alpha 中");
+    for path in ["/srv/next", "/srv/next"] {
+        fixture.terminals[0].update(&mut fixture.window, |view, cx| {
+            view.remote_files_test_pwd(path, cx);
+        });
+        listed(&mut fixture, path);
+    }
+    fixture.terminals[1].update(&mut fixture.window, |view, cx| {
+        view.remote_files_test_pwd("/background", cx);
+    });
+    fixture.window.run_until_parked();
+    listed(&mut fixture, "/srv/next");
+}
+
+#[gpui::test]
 fn opening_remote_files_and_shell_cwd_events_use_the_focused_pane(cx: &mut TestAppContext) {
     let mut fixture = open(cx);
     listed(&mut fixture, "/srv/Alpha 中");
@@ -307,6 +332,53 @@ fn opening_remote_files_and_shell_cwd_events_use_the_focused_pane(cx: &mut TestA
     fixture.workspace.read_with(&fixture.window, |workspace, _| {
         assert!(workspace.side_panel.root().is_none(), "remote cwd must not become a host root");
     });
+}
+
+#[gpui::test]
+fn material_icon_uses_a_fixed_slot_in_the_production_sftp_row(cx: &mut TestAppContext) {
+    use gpui::{AppContext as _, IntoElement, Render};
+    struct RowProbe(Entity<NebulaWorkspace>, SftpEntry);
+    impl Render for RowProbe {
+        fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+            let mut folder = self.1.clone();
+            folder.kind = SftpEntryKind::Directory;
+            folder.name = "folder".into();
+            folder.path.push_str("/folder");
+            div()
+                .w(px(320.0))
+                .h(px(56.0))
+                .flex()
+                .flex_col()
+                .child(self.0.update(cx, |workspace, cx| {
+                    workspace.render_remote_row(self.1.clone(), (false, false), window, cx)
+                }))
+                .child(self.0.update(cx, |workspace, cx| {
+                    workspace.render_remote_row(folder, (false, false), window, cx)
+                }))
+        }
+    }
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    let mut entry = fixture
+        .workspace
+        .read_with(&fixture.window, |workspace, _| workspace.remote_browser.entries[0].clone());
+    // russh's File::dummy has directory attributes. This fixture also needs a file.
+    entry.kind = SftpEntryKind::File;
+    let owner = fixture.workspace.clone();
+    let (_, window) = cx.add_window_view(|window, cx| {
+        let row = cx.new(|_| RowProbe(owner, entry));
+        Root::new(row, window, cx)
+    });
+    window.run_until_parked();
+    window.update(|window, cx| window.draw(cx).clear(cx));
+    let icon = window
+        .debug_bounds("sftp-file-icon-file-icons/material/document.svg")
+        .expect("Material icon in the production row");
+    assert_eq!(icon.size, gpui::size(px(16.0), px(16.0)));
+    let folder = window
+        .debug_bounds("sftp-file-icon-file-icons/material/folder-base.svg")
+        .expect("Material folder in the production row");
+    assert_eq!(folder.size, icon.size);
 }
 
 #[gpui::test]
@@ -442,4 +514,203 @@ fn failed_follow_keeps_the_old_listing_and_refresh_retries_the_failed_target(
     });
     listed(&mut fixture, "/denied");
     assert_eq!(fixture.stores[0].lock().unwrap().requested, ["/denied"]);
+}
+
+#[gpui::test]
+fn copy_path_feedback_and_paste_jump_navigate_the_remote_drawer(cx: &mut TestAppContext) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    let copy_bounds = fixture.window.debug_bounds("remote-files-copy-path").unwrap();
+    fixture.window.simulate_click(copy_bounds.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    let copied = fixture
+        .window
+        .update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()))
+        .unwrap();
+    assert_eq!(copied, "/srv/Alpha 中");
+    assert!(fixture.workspace.read_with(&fixture.window, |workspace, cx| {
+        workspace
+            .remote_browser
+            .copy_feedback
+            .as_ref()
+            .is_some_and(|feedback| feedback.read(cx).is_copied())
+    }));
+    cx.executor().advance_clock(
+        crate::gpui_shell::copy_feedback::COPY_FEEDBACK_TTL + Duration::from_millis(1),
+    );
+    fixture.window.run_until_parked();
+    assert!(!fixture.workspace.read_with(&fixture.window, |workspace, cx| {
+        workspace
+            .remote_browser
+            .copy_feedback
+            .as_ref()
+            .is_some_and(|feedback| feedback.read(cx).is_copied())
+    }));
+
+    let path_bounds = fixture.window.debug_bounds("remote-files-path").unwrap();
+    fixture.window.simulate_click(path_bounds.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(fixture.window.debug_bounds("remote-files-path-editor").is_some());
+
+    fixture.window.update(|_, cx| {
+        cx.write_to_clipboard(gpui::ClipboardItem::new_string("/srv/pasted".to_owned()));
+    });
+    let paste = if crate::platform::Platform::current() == crate::platform::Platform::MacOS {
+        "cmd-v"
+    } else {
+        "ctrl-v"
+    };
+    fixture.window.simulate_keystrokes(paste);
+    fixture.window.simulate_keystrokes("enter");
+    listed(&mut fixture, "/srv/pasted");
+    assert!(
+        fixture
+            .workspace
+            .read_with(&fixture.window, |workspace, _| { workspace.remote_path.is_none() })
+    );
+}
+
+#[gpui::test]
+fn a_shell_without_cwd_reports_follows_the_next_unique_probe(cx: &mut TestAppContext) {
+    const DESTINATION: &str = "fixture@same-host.invalid";
+    let _probes = ProbeQueueGuard::new(DESTINATION);
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.navigate_remote("/manual".into(), cx);
+    });
+    listed(&mut fixture, "/manual");
+    let listed_before = fixture.stores[0].lock().unwrap().requested.len();
+
+    fixture.window.update(|_, cx| {
+        cx.update_global::<crate::gpui_shell::config::Settings, _>(|settings, _| {
+            settings.sftp_follow_session = true;
+        });
+    });
+    fixture.terminals[0].update(&mut fixture.window, |view, _| {
+        view.forget_reported_cwd_for_test();
+    });
+    queue_test_probe(
+        DESTINATION,
+        crate::ssh_sftp::remote_cwd::RemoteCwd::Located("/srv/Alpha 中".into()),
+    );
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.cwd_probe_at = None;
+        workspace.sync_side_panel_to_active(false, cx);
+    });
+    wait(&mut fixture, |fixture| {
+        fixture
+            .workspace
+            .read_with(&fixture.window, |workspace, _| !workspace.remote_browser.cwd_probe_running)
+    });
+    fixture.workspace.read_with(&fixture.window, |workspace, _| {
+        assert_eq!(workspace.remote_browser.path, "/manual");
+    });
+    assert_eq!(fixture.stores[0].lock().unwrap().requested.len(), listed_before);
+
+    queue_test_probe(
+        DESTINATION,
+        crate::ssh_sftp::remote_cwd::RemoteCwd::Located("/srv/probed".into()),
+    );
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.cwd_probe_at = None;
+        workspace.sync_side_panel_to_active(false, cx);
+    });
+    listed(&mut fixture, "/srv/probed");
+
+    fixture.terminals[0].update(&mut fixture.window, |view, _| {
+        view.forget_reported_cwd_for_test();
+    });
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.cwd_probe_at = None;
+        workspace.sync_side_panel_to_active(false, cx);
+    });
+    wait(&mut fixture, |fixture| {
+        fixture
+            .workspace
+            .read_with(&fixture.window, |workspace, _| !workspace.remote_browser.cwd_probe_running)
+    });
+    fixture.workspace.read_with(&fixture.window, |workspace, _| {
+        assert_eq!(
+            workspace.remote_browser.path, "/srv/probed",
+            "an ambiguous probe must not move the listing"
+        );
+    });
+}
+
+struct ProbeQueueGuard(&'static str);
+
+impl ProbeQueueGuard {
+    fn new(destination: &'static str) -> Self {
+        clear_test_probes(destination);
+        Self(destination)
+    }
+}
+
+impl Drop for ProbeQueueGuard {
+    fn drop(&mut self) {
+        clear_test_probes(self.0);
+    }
+}
+
+#[gpui::test]
+fn sftp_follow_session_switch_pauses_and_snaps_back_when_enabled(cx: &mut TestAppContext) {
+    use crate::gpui_shell::settings_fixture::{SettingsBytesGuard, lock_theme_studio};
+
+    let _fixture_guard = lock_theme_studio();
+    let _guard = SettingsBytesGuard::capture();
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    let toggle = fixture.window.debug_bounds("nebula-switch-sftp-follow-session").unwrap();
+    fixture.window.simulate_click(toggle.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    assert!(
+        !fixture
+            .workspace
+            .read_with(&fixture.window, |workspace, cx| { workspace.sftp_follows_session(cx) })
+    );
+
+    report(&mut fixture, 0, Event::CwdReport("/srv/moved-while-paused".into()));
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    assert_eq!(
+        fixture
+            .workspace
+            .read_with(&fixture.window, |workspace, _| { workspace.remote_browser.path.clone() }),
+        "/srv/Alpha 中"
+    );
+
+    let toggle = fixture.window.debug_bounds("nebula-switch-sftp-follow-session").unwrap();
+    fixture.window.simulate_click(toggle.center(), gpui::Modifiers::default());
+    listed(&mut fixture, "/srv/moved-while-paused");
+}
+
+#[gpui::test]
+fn drop_upload_paths_uses_target_directory_and_rejects_when_unready(cx: &mut TestAppContext) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    let gate = Arc::new(tokio::sync::Semaphore::new(0));
+    fixture.stores[0].lock().unwrap().gates.insert("/srv/sub".into(), gate.clone());
+    let local = tempfile::NamedTempFile::new().unwrap();
+    let path = local.path().to_path_buf();
+    let workspace = fixture.workspace.clone();
+
+    fixture.window.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.remote_browser.loading = true;
+            workspace.drop_upload_paths(vec![path.clone()], None, window, cx);
+            assert!(workspace.remote_browser.error.is_some());
+            workspace.remote_browser.loading = false;
+            workspace.remote_browser.error = None;
+            workspace.drop_upload_paths(vec![path], Some("/srv/sub".into()), window, cx);
+            assert!(workspace.remote_browser.preflighting);
+        });
+    });
+    wait(&mut fixture, |fixture| {
+        fixture.stores[0].lock().unwrap().requested.contains(&"/srv/sub".to_owned())
+    });
 }

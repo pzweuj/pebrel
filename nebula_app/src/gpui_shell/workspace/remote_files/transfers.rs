@@ -227,12 +227,18 @@ impl NebulaWorkspace {
         let skip_unchanged = self.remote_browser.skip_unchanged;
         let checked = pending.clone();
         let check_target = target.clone();
+        let browse_session = self.remote_browser.browse_sessions.get(&target.pane).cloned();
         let task = cx.background_executor().spawn(async move {
             let entries = if matches!(checked, PendingRemoteTransfer::Download { .. }) {
                 Vec::new()
             } else {
                 remote_call(move || async move {
-                    crate::ssh_sftp::list_dir(&check_target.destination, &check_target.path).await
+                    if let Some(session) = browse_session {
+                        session.list_dir(&check_target.path).await
+                    } else {
+                        crate::ssh_sftp::list_dir(&check_target.destination, &check_target.path)
+                            .await
+                    }
                 })
                 .await
                 .ok_or_else(|| "Remote connection is unavailable".to_owned())??

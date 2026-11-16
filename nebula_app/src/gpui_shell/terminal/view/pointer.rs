@@ -938,8 +938,8 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// 中键只在鼠标模式下有意义（上报给应用）；旧壳在 Windows 上没有
-    /// 中键粘贴路径，这里保持一致。
+    /// 中键默认只在鼠标模式里上报。`middle_click_paste` 打开后，终端自己
+    /// 处理指针时改为粘贴剪贴板；应用鼠标模式仍优先，Shift 与滚轮一样旁路。
     pub(super) fn on_middle_down(
         &mut self,
         event: &MouseDownEvent,
@@ -953,6 +953,9 @@ impl TerminalView {
             cx.stop_propagation();
             return;
         }
+        if self.session.is_none() {
+            return;
+        }
         if self.mouse_mode_active(&event.modifiers) {
             self.send_mouse_report(
                 event.position,
@@ -960,6 +963,13 @@ impl TerminalView {
                 true,
                 &event.modifiers,
             );
+        } else if cx
+            .try_global::<crate::gpui_shell::config::Settings>()
+            .is_some_and(|settings| settings.middle_click_paste)
+        {
+            // Shift already bypasses application mouse mode, matching the wheel.
+            self.paste(window, cx);
+            cx.stop_propagation();
         }
         cx.notify();
     }

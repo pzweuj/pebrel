@@ -4,6 +4,56 @@ Every release entry is provided in English and Simplified Chinese.
 
 每个版本条目均同时提供英文和简体中文说明。
 
+## 2.5.1 - 2026-11-14
+
+### English
+
+#### Added
+
+- Show logged-in server accounts in the SSH status strip, with duplicate accounts merged and session login times available on hover.
+- Show Material file-type icons in SFTP listings.
+- Start the bundled Windows X display with Pebrel, preferring VcXsrv for compatibility and retaining optional yserver.
+
+#### Fixed
+
+- Keep enabled SFTP directory following working across repeated `pwd` commands and intervening `cd` in shells without completion reports, including returning from manual browsing. Preserve explicit `pwd` captures across shell title updates and history recall.
+- Refresh X11 authentication after the local display restarts and report remote forwarding rejection.
+
+#### Improved
+
+- Keep background terminal directory reports from redirecting the focused SFTP listing.
+- Use the existing top tab layout by default for terminal switching and closing.
+- Disable automatic and manual application updates, including checks, reminders, downloads, installation and previously scheduled installation.
+- Hide VcXsrv keyboard command windows and avoid its repeated reset initialization; probe npm Codex through its own native executable.
+
+### 中文
+
+#### 新增
+
+- SSH 底栏显示服务器已登录账户，同名账户合并，悬停可查看各会话的登录时间。
+- SFTP 列表显示 Material 文件类型彩色图标。
+- Windows X11 服务随 Pebrel 启动，优先使用 VcXsrv，并保留可选 yserver。
+
+#### 修复
+
+- 开启 SFTP 跟随后，无完成上报的 Shell 连续执行 `pwd` 或先执行 `cd` 再执行 `pwd` 都能更新目录，包括从手动浏览目录返回；Shell 标题更新和历史召回不会取消显式 `pwd` 捕获。
+- 本地 X11 服务重启后刷新转发认证，并提示远端拒绝转发的情况。
+
+#### 改进
+
+- 后台终端的目录更新不会改变前台 SFTP 列表。
+- 默认使用现有顶部标签布局，支持切换和关闭终端。
+- 禁用应用内自动及手动更新，包括检查、提醒、下载、安装和旧的预约安装。
+- 隐藏 VcXsrv 键盘命令窗口并避免反复重置初始化；npm Codex 版本探测直接使用其自带原生程序。
+
+### Contributors
+
+Local build from the current working tree. / 基于当前工作区构建。
+
+### SHA256
+
+Local Windows artifacts: see the accompanying SHA256SUMS.txt. / 本地 Windows 产物校验值见配套 SHA256SUMS.txt。
+
 ## 2.5.0 - 2026-11-09
 
 ```text

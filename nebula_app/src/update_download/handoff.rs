@@ -385,6 +385,9 @@ fn validate_windows(windows: &[Session]) -> Result<(), String> {
 
 /// Only an explicitly armed administrator update persists privileged session state.
 pub(crate) fn checkpoint_scheduled(session: &Session) -> io::Result<bool> {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return Ok(false);
+    }
     if !SCHEDULED_IN_THIS_PROCESS.load(Ordering::Acquire) {
         return Ok(false);
     }
@@ -415,6 +418,9 @@ fn scheduled_windows() -> Result<Vec<Session>, String> {
 /// Before resident resources/windows exist, apply an explicitly armed update.
 /// A failed attempt is disarmed and normal startup remains available.
 pub(crate) fn apply_scheduled() -> bool {
+    if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+        return false;
+    }
     if crate::platform::distribution::current().externally_managed() {
         return false;
     }

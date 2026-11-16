@@ -47,7 +47,7 @@ pub const CAPABILITIES: Capabilities = {
             launch_at_login: true,
             system_notifications: true,
             system_bell: true,
-            self_update_install: true,
+            self_update_install: nebula_settings::APPLICATION_UPDATES_ENABLED,
             ai_hook_server: true,
             quick_terminal_hotkey: true,
             system_font_enumeration: true,
@@ -65,7 +65,8 @@ pub const CAPABILITIES: Capabilities = {
             launch_at_login: true,
             system_notifications: true,
             system_bell: true,
-            self_update_install: cfg!(target_os = "macos"),
+            self_update_install: nebula_settings::APPLICATION_UPDATES_ENABLED
+                && cfg!(target_os = "macos"),
             ai_hook_server: true,
             quick_terminal_hotkey: true,
             system_font_enumeration: true,
@@ -89,7 +90,6 @@ mod tests {
             CAPABILITIES.launch_at_login,
             CAPABILITIES.system_notifications,
             CAPABILITIES.system_bell,
-            CAPABILITIES.self_update_install,
             CAPABILITIES.ai_hook_server,
             CAPABILITIES.quick_terminal_hotkey,
             CAPABILITIES.system_font_enumeration,
@@ -98,6 +98,7 @@ mod tests {
             CAPABILITIES.restore_directory_window_size,
             CAPABILITIES.native_shell_clipboard,
         ];
+        assert!(!CAPABILITIES.self_update_install);
         if cfg!(windows) {
             assert!(all.iter().all(|flag| *flag));
         } else {
@@ -107,7 +108,7 @@ mod tests {
             assert!(CAPABILITIES.hide_window_on_close);
             assert!(CAPABILITIES.system_tray);
             assert!(CAPABILITIES.system_bell);
-            assert_eq!(CAPABILITIES.self_update_install, cfg!(target_os = "macos"));
+            assert!(!CAPABILITIES.self_update_install);
             assert!(CAPABILITIES.ai_hook_server);
             assert!(CAPABILITIES.quick_terminal_hotkey);
             assert!(CAPABILITIES.shell_context_menu);

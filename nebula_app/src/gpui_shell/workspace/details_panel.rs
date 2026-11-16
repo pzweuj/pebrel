@@ -136,6 +136,36 @@ impl NebulaWorkspace {
         }
     }
 
+    pub(super) fn files_panel_on_left(&self, cx: &App) -> bool {
+        cx.try_global::<crate::gpui_shell::config::Settings>().is_some_and(|settings| {
+            settings.files_panel_side == nebula_settings::FilesPanelSide::Left
+        })
+    }
+
+    fn left_sidebar_occupied_width(&self) -> f32 {
+        if self.tabs_position == nebula_settings::TabsPositionName::Sidebar
+            && !self.sidebar_collapsed
+        {
+            self.sidebar_width
+        } else {
+            0.0
+        }
+    }
+
+    fn toggle_files_panel_side(&mut self, cx: &mut Context<Self>) {
+        let next = if self.files_panel_on_left(cx) {
+            nebula_settings::FilesPanelSide::Right
+        } else {
+            nebula_settings::FilesPanelSide::Left
+        };
+        if nebula_settings::persist_keys(&[("files_panel_side", next.settings_value().to_owned())])
+            .is_err()
+        {
+            return;
+        }
+        self.apply_runtime_settings(cx);
+    }
+
     pub(super) fn toggle_document_details(&mut self, cx: &mut Context<Self>) {
         if self.side_panel.open {
             self.toggle_side_panel(self.side_panel.view, cx);
@@ -150,7 +180,9 @@ impl NebulaWorkspace {
         cx: &mut Context<Self>,
     ) -> Button {
         let visible = self.side_panel.open && !self.reader_focus_active(cx);
-        toolbar_button("toggle-right-sidebar", IconName::PanelRight, disabled)
+        let icon =
+            if self.files_panel_on_left(cx) { IconName::PanelLeft } else { IconName::PanelRight };
+        toolbar_button("toggle-right-sidebar", icon, disabled)
             .debug_selector(|| "toggle-right-sidebar".to_owned())
             .selected(visible)
             .when(visible, |button| button.bg(cx.theme().secondary))
@@ -223,13 +255,14 @@ impl NebulaWorkspace {
             IconName::FolderClosed,
         ));
         tabs.push((3, "side-panel-git", vcs_name, IconName::Github));
-        let label_limit =
-            (width - 16.0 - tabs.len() as f32 * HEADER_CONTROL_SIZE - tabs.len() as f32 * 2.0)
-                .max(0.0);
+        let controls = tabs.len() + 1;
+        let label_limit = (width - 16.0 - controls as f32 * (HEADER_CONTROL_SIZE + 2.0)).max(0.0);
         let selected = self.details_tab(cx);
         let previous = self.details_panel.previous_tab;
         let serial = self.details_panel.transition;
         let background = cx.theme().secondary;
+        let files_on_left = self.files_panel_on_left(cx);
+        let swap_tip = language.text(Message::SettingsFilesDrawerSide);
         let mut header = h_flex()
             .id("workspace-details-header")
             .debug_selector(|| "workspace-details-header".to_owned())
@@ -317,7 +350,19 @@ impl NebulaWorkspace {
                 );
             header = header.child(button);
         }
-        header.child(div().flex_1()).into_any_element()
+        header
+            .child(div().flex_1())
+            .child(
+                toolbar_button(
+                    "files-panel-side",
+                    if files_on_left { IconName::PanelRight } else { IconName::PanelLeft },
+                    false,
+                )
+                .debug_selector(|| "files-panel-side".to_owned())
+                .tooltip(swap_tip)
+                .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel_side(cx))),
+            )
+            .into_any_element()
     }
 
     pub(super) fn render_side_panel_slot(
@@ -378,22 +423,37 @@ impl NebulaWorkspace {
             ));
         // Instant: both 240 ms translations are dropped and the band rests at
         // its final width, so the panel appears in place instead of sliding.
+        let from_left = self.files_panel_on_left(cx);
         let band: gpui::AnyElement = if instant {
             band.into_any_element()
         } else {
             band.with_animation(
-                ("side-panel-push", open as usize),
+                ("side-panel-push", (open as usize) + if from_left { 2 } else { 0 }),
                 Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
-                move |band, t| band.left(px(width * if open { 1.0 - t } else { t })),
+                move |band, t| {
+                    let travel = width * if open { 1.0 - t } else { t };
+                    band.left(px(if from_left { -travel } else { travel }))
+                },
             )
             .into_any_element()
         };
+        let titlebar_background = self.titlebar_background.clone();
         let slot = div()
             .id("workspace-details-slot")
             .debug_selector(|| "workspace-details-slot".to_owned())
             .relative()
             .h_full()
             .flex_shrink_0()
+            .when(from_left, |slot| {
+                slot.child(
+                    gpui::canvas(
+                        move |bounds, _, _| titlebar_background.record_left_drawer(bounds),
+                        |_, _, _, _| (),
+                    )
+                    .absolute()
+                    .inset_0(),
+                )
+            })
             .child(div().size_full().overflow_hidden().bg(cx.theme().background).child(band));
         if instant {
             slot.w(px(width)).into_any_element()
@@ -420,6 +480,8 @@ impl NebulaWorkspace {
         } else {
             panel_width(self.details_panel.width, f32::from(window.viewport_size().width))
         };
+        let on_left = self.files_panel_on_left(cx);
+        let sidebar = if on_left { self.left_sidebar_occupied_width() } else { 0.0 };
         Some(
             div()
                 .id("workspace-details-resize")
@@ -427,7 +489,8 @@ impl NebulaWorkspace {
                 .absolute()
                 .top_0()
                 .bottom_0()
-                .right(px(width - RESIZE_HIT_WIDTH * 0.5))
+                .when(on_left, |handle| handle.left(px(sidebar + width - RESIZE_HIT_WIDTH * 0.5)))
+                .when(!on_left, |handle| handle.right(px(width - RESIZE_HIT_WIDTH * 0.5)))
                 .w(px(RESIZE_HIT_WIDTH))
                 .occlude()
                 .cursor_col_resize()
@@ -469,6 +532,7 @@ impl NebulaWorkspace {
         window: &Window,
         cx: &mut Context<Self>,
     ) {
+        let on_left = self.files_panel_on_left(cx);
         let Some(drag) = &mut self.details_panel.resize else { return };
         if !window.is_window_active() {
             self.cancel_details_panel_resize(cx);
@@ -481,7 +545,14 @@ impl NebulaWorkspace {
         }
         let maximum = panel_width(MAX_WIDTH, f32::from(window.viewport_size().width));
         let minimum = MIN_WIDTH.min(maximum);
-        let raw = drag.start_width + drag.start_x - f32::from(event.position.x);
+        let x = f32::from(event.position.x);
+        // The handle is the inner edge. Dragging away from the session grows
+        // the drawer: leftward when it is docked on the right, rightward on the left.
+        let raw = if on_left {
+            drag.start_width + x - drag.start_x
+        } else {
+            drag.start_width + drag.start_x - x
+        };
         self.details_panel.width = drag.width(raw, minimum, maximum);
         cx.notify();
     }
@@ -510,6 +581,9 @@ impl NebulaWorkspace {
         &self,
         cx: &mut Context<Self>,
     ) -> Option<gpui::AnyElement> {
+        let on_left = self.files_panel_on_left(cx);
+        let hint_offset = if on_left { self.left_sidebar_occupied_width() } else { 0.0 }
+            + self.details_panel.width;
         self.details_panel.resize.map(|drag| {
             div()
                 .id("workspace-details-resize-overlay")
@@ -529,11 +603,7 @@ impl NebulaWorkspace {
                     }),
                 )
                 .when(drag.close, |overlay| {
-                    overlay.child(super::sidebar_resize::collapse_hint(
-                        false,
-                        self.details_panel.width,
-                        cx,
-                    ))
+                    overlay.child(super::sidebar_resize::collapse_hint(on_left, hint_offset, cx))
                 })
                 .into_any_element()
         })

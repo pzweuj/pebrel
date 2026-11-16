@@ -368,6 +368,22 @@ fn prompt_line_snapshot(
     Some(PromptLineSnapshot { prompt: prompt.to_owned(), input: typed_tail.to_owned() })
 }
 
+pub(crate) fn shell_submission_prompt_restored(
+    expected: &str,
+    current: &str,
+    env: &SuggestEnv,
+    semantic_input: bool,
+) -> bool {
+    shell_prompt_restored(expected, current, env)
+        || (semantic_input
+            && expected.trim_end() == current.trim_end()
+            && current
+                .trim_end()
+                .chars()
+                .next_back()
+                .is_some_and(|marker| likely_prompt(current.trim_end(), marker, env)))
+}
+
 fn shell_prompt_restored(expected_prompt: &str, current_line: &str, env: &SuggestEnv) -> bool {
     let expected = expected_prompt.trim_end();
     let current = current_line.trim_end();
@@ -414,6 +430,13 @@ fn remote_prompt_anchor(prompt: &str, expected_marker: char) -> Option<&str> {
         return None;
     }
     let head = normalized[..normalized.len() - expected_marker.len_utf8()].trim_end();
+    if let Some(bracketed) = head.strip_prefix('[').and_then(|head| head.strip_suffix(']')) {
+        if let Some((identity, directory)) = bracketed.split_once(char::is_whitespace) {
+            if identity.contains('@') && !directory.trim().is_empty() {
+                return Some(identity);
+            }
+        }
+    }
     let colon = head.find(':')?;
     let suffix = head[colon + 1..].trim_start();
     if !matches!(suffix.chars().next(), Some('~' | '/')) {
@@ -693,5 +716,16 @@ mod tests {
             assert!(!shell_prompt_restored("dev@box:~$", "dev@other:/work$ ", &env));
             assert!(!shell_prompt_restored("dev@box:~$", "build:/work$ ", &env));
         }
+    }
+    #[test]
+    fn remote_prompt_matching_keeps_identity_across_directory_changes() {
+        let env = SuggestEnv::Ssh { destination: "dev@example.invalid".into() };
+        assert!(shell_prompt_restored("[dev@host ~]$", "[dev@host project]$", &env));
+        assert!(!shell_prompt_restored("[dev@host ~]$", "[other@host project]$", &env));
+        assert!(!shell_prompt_restored("❯", "❯", &env));
+        assert!(!shell_submission_prompt_restored("❯", "❯", &env, false));
+        assert!(shell_submission_prompt_restored("❯", "❯", &env, true));
+        assert!(!shell_submission_prompt_restored("Password:", "Password:", &env, true));
+        assert!(!shell_prompt_restored("dev@host:~$", "python >", &env));
     }
 }

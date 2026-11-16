@@ -1,9 +1,9 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "2.5.0"
+  #define AppVersion "2.5.1"
 #endif
 
 #ifndef NumericVersion
-  #define NumericVersion "2.5.0.0"
+  #define NumericVersion "2.5.1.0"
 #endif
 
 #ifndef Configuration
@@ -127,6 +127,10 @@ Source: "{#RepoRoot}\README.zh-CN.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildRoot}\pebrel-hook.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#BuildRoot}\conpty.dll"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#BuildRoot}\OpenConsole.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
+; Optional X displays, including yserver's xkb data and dependency licenses.
+#if DirExists(RepoRoot + "\packaging\windows\x11")
+Source: "{#RepoRoot}\packaging\windows\x11\*"; DestDir: "{app}\x11"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+#endif
 Source: "{#RepoRoot}\assets\fonts\MapleMonoNormal-NF-CN-Regular.ttf"; DestDir: "{app}\fonts"; Flags: ignoreversion
 #ifndef AcceptanceFixture
 Source: "{#RepoRoot}\assets\fonts\MapleMonoNormal-NF-CN-Regular.ttf"; DestDir: "{autofonts}"; FontInstall: "Maple Mono Normal NF CN"; Tasks: installfont; Flags: onlyifdoesntexist uninsneveruninstall
@@ -141,6 +145,7 @@ Source: "{#RepoRoot}\docs\skills\pebrel-runtime\agents\openai.yaml"; DestDir: "{
 Source: "{#RepoRoot}\LICENSE"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#RepoRoot}\licenses\LICENSE-LUA"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#RepoRoot}\licenses\LICENSE-MLUA"; DestDir: "{app}\licenses"; Flags: ignoreversion
+Source: "{#RepoRoot}\licenses\LICENSE-MATERIAL-ICON-THEME"; DestDir: "{app}\licenses"; Flags: ignoreversion
 Source: "{#RepoRoot}\THIRD-PARTY-NOTICES"; DestDir: "{app}\licenses"; Flags: ignoreversion
 
 [Icons]

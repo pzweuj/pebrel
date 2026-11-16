@@ -62,6 +62,9 @@ impl NebulaWorkspace {
             return;
         }
         let Some(mut target) = self.current_remote_transfer_target() else {
+            self.remote_browser.error =
+                Some(workspace_ui_language().text(Message::TransferNotReady).to_owned());
+            cx.notify();
             return;
         };
         if let Some(directory) = directory {

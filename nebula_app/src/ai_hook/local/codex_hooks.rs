@@ -40,9 +40,15 @@ fn probe(args: &[&str]) -> Option<String> {
     let mut output = tempfile::tempfile().ok()?;
     #[cfg(windows)]
     let mut command = {
-        let mut command = Command::new("cmd.exe");
-        command.args(["/d", "/c", "codex"]);
-        command
+        let executable =
+            crate::ai_hook::integrations::executable(crate::ai_agents::AgentKind::Codex)?;
+        if let Some(native) = windows_probe_executable(&executable) {
+            Command::new(native)
+        } else {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/d", "/c", "codex"]);
+            command
+        }
     };
     #[cfg(not(windows))]
     let mut command =
@@ -78,6 +84,40 @@ fn probe(args: &[&str]) -> Option<String> {
     let mut text = String::new();
     output.take(64 * 1024).read_to_string(&mut text).ok()?;
     Some(text)
+}
+
+#[cfg(windows)]
+fn windows_probe_executable(launcher: &Path) -> Option<std::path::PathBuf> {
+    if launcher.extension().is_some_and(|ext| ext.eq_ignore_ascii_case("exe")) {
+        return Some(launcher.to_owned());
+    }
+    // npm's Windows shim executes TITLE and then Node, which starts another
+    // console application. Probe the same package's native binary directly;
+    // interactive launches still use the user's selected wrapper.
+    let mut text = String::new();
+    std::fs::File::open(launcher).ok()?.take(16 * 1024 + 1).read_to_string(&mut text).ok()?;
+    if text.len() > 16 * 1024
+        || !text.replace('/', "\\").contains("node_modules\\@openai\\codex\\bin\\codex.js")
+    {
+        return None;
+    }
+    let modules = launcher.parent()?.join("node_modules");
+    let package = modules.join("@openai/codex");
+    let (platform, target) = if cfg!(target_arch = "aarch64") {
+        ("codex-win32-arm64", "aarch64-pc-windows-msvc")
+    } else {
+        ("codex-win32-x64", "x86_64-pc-windows-msvc")
+    };
+    [
+        package.join("node_modules/@openai").join(platform).join("vendor"),
+        modules.join("@openai").join(platform).join("vendor"),
+        package.join("vendor"),
+    ]
+    .into_iter()
+    .flat_map(|root| {
+        [root.join(target).join("bin/codex.exe"), root.join(target).join("codex/codex.exe")]
+    })
+    .find(|path| path.is_file())
 }
 
 fn supported_mode() -> Option<CodexHookMode> {
@@ -272,6 +312,36 @@ fn remove(directory: &Path) -> io::Result<bool> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(windows)]
+    #[test]
+    fn npm_probe_uses_its_own_native_binary_and_preserves_custom_launchers() {
+        let root = tempfile::tempdir().unwrap();
+        let launcher = root.path().join("codex.cmd");
+        let (platform, target) = if cfg!(target_arch = "aarch64") {
+            ("codex-win32-arm64", "aarch64-pc-windows-msvc")
+        } else {
+            ("codex-win32-x64", "x86_64-pc-windows-msvc")
+        };
+        let native = root
+            .path()
+            .join("node_modules/@openai/codex/node_modules/@openai")
+            .join(platform)
+            .join("vendor")
+            .join(target)
+            .join("bin/codex.exe");
+        std::fs::create_dir_all(native.parent().unwrap()).unwrap();
+        std::fs::write(&native, b"fixture").unwrap();
+        std::fs::write(&launcher, r#"node "%dp0%\node_modules\@openai\codex\bin\codex.js" %*"#)
+            .unwrap();
+        assert_eq!(windows_probe_executable(&launcher), Some(native));
+        std::fs::write(&launcher, "custom-wrapper --profile work").unwrap();
+        assert_eq!(windows_probe_executable(&launcher), None);
+        std::fs::write(&launcher, "x".repeat(17000)).unwrap();
+        assert_eq!(windows_probe_executable(&launcher), None);
+        let direct = root.path().join("codex.exe");
+        assert_eq!(windows_probe_executable(&direct), Some(direct));
+    }
 
     #[test]
     fn upgrades_cmd_style_owned_hooks_without_changing_user_entries() {

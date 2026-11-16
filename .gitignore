@@ -152,3 +152,5 @@ dist-pack-*/
 
 NebulaTerminal-*/
 *-preview-package/
+# Optional X servers are verified build inputs, populated by fetch scripts.
+/packaging/windows/x11/

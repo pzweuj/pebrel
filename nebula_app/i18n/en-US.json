@@ -206,7 +206,7 @@
         "providers": "providers provider ai api prediction prompt suggestions",
         "ssh": "ssh host remote connection",
         "network": "network proxy connectivity",
-        "interaction": "interaction copy paste tab panel focus follows mouse",
+        "interaction": "interaction copy paste middle click tab panel files drawer side focus follows mouse sftp follow",
         "keymap": "keymap key binding shortcut quick terminal",
         "advanced": "advanced session tray restore startup autostart login silent",
         "backup": "backup cloud sync export restore webdav s3 sftp 123 nextcloud synology nas r2 minio snapshots",
@@ -220,6 +220,9 @@
       "description": "Lower values make terminal and Settings backgrounds more transparent. Text stays opaque."
     },
     "quick_terminal_unavailable": "Global shortcut could not be registered: {error}. Enable a GlobalShortcuts desktop portal or use the tray to show Pebrel.",
+    "files_drawer_side": "Files drawer",
+    "middle_click_paste": "Middle-click paste",
+    "sftp_follow_session": "SFTP follows the session",
     "completion": {
       "history": {
         "title": "Pebrel command history",
@@ -624,7 +627,9 @@
       "leave_empty_to_keep_the": "Leave empty to keep the saved password",
       "user_bastion_n22_or_ssh": "user@bastion:22 or SSH config alias",
       "search_icons": "Search icons...",
-      "backup_password_at_least_n8": "Backup password (at least 8 characters)"
+      "backup_password_at_least_n8": "Backup password (at least 8 characters)",
+      "files_on_the_right": "Right of the session",
+      "files_on_the_left": "Left of the session"
     },
     "help": {
       "changes_only_the_terminal_background": "Changes only the terminal background; Settings keeps the theme colors.",
@@ -658,6 +663,9 @@
       "chooses_the_key_used_to": "Chooses the key used to accept a suggestion.",
       "use_right_arrow_if_tab": "Use Right arrow if Tab conflicts with the shell's own completion.",
       "copies_on_mouse_release_and": "Copies on mouse release and pastes on right-click.",
+      "middle_click_pastes_clipboard": "Middle-click pastes the clipboard into the terminal.",
+      "places_the_files_drawer": "Places the files drawer on the left or right of the session.",
+      "sftp_follows_the_session": "SFTP follows the focused session when its directory changes.",
       "when_disabled_selection_does_not": "When disabled, selection does not copy automatically and right-click opens the copy/paste menu.",
       "asks_before_multiline_or_risky": "Asks before multiline or risky pastes in a plain shell.",
       "checks_line_breaks_privileged_commands": "Checks line breaks, privileged commands and control characters. Bracketed paste and full-screen apps are unaffected; disabling this pastes directly.",
@@ -1668,6 +1676,11 @@
     "fork_label": "Fork · {title}",
     "fork_title": "{title} (fork)"
   },
+  "x11": {
+    "title": "X11 forwarding",
+    "description": "On Windows, Pebrel starts its own display. Remote programs open as normal windows. Applies to new shells on this host.",
+    "unavailable": "X11 did not start. The shell is still open. {error}"
+  },
   "remote": {
     "locating": "Locating the remote directory…",
     "parent": "Up one level",
@@ -1686,7 +1699,22 @@
     "busy_other": "Another host is transferring: {destination}",
     "items": "{count} items",
     "selected_items": "{count} items selected",
-    "clear_selection": "Clear selection (Esc)"
+    "clear_selection": "Clear selection (Esc)",
+    "copy_path": "Copy path",
+    "copied": "Copied",
+    "path_placeholder": "Paste a remote directory and press Enter",
+    "path_invalid": "Enter a remote directory path",
+    "follow_session": "Follow the session"
+  },
+  "session_status": {
+    "users": "Online",
+    "login_times": "Login sessions (server time)",
+    "cpu": "CPU",
+    "memory": "Memory",
+    "swap": "Swap",
+    "disk": "Disk",
+    "download": "Download",
+    "upload": "Upload"
   },
   "backup_flow": {
     "password_notice": "Pebrel keeps this password in memory only for the current run and never writes it to disk. You will be asked again for the first backup after restarting. If you forget it, existing backups cannot be unlocked.",

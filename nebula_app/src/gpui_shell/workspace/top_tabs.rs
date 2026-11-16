@@ -511,7 +511,9 @@ impl NebulaWorkspace {
                                     .when(tab_close_visible || settings_navigation, |slot| {
                                             slot.child(Self::tab_status_icon(
                                                 Button::new(("top-close-tab", ix))
+                                                    .debug_selector(move || format!("top-close-tab-{ix}"))
                                                     .icon(IconName::Close)
+                                                    .tooltip(language.text(Message::CommonClose))
                                                     .ghost()
                                                     .xsmall()
                                                     .on_click(cx.listener(

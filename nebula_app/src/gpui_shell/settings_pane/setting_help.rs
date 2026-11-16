@@ -102,6 +102,15 @@ pub(super) fn help(key: &str, language: UiLanguage) -> SettingHelp {
             language.text(crate::i18n::Message::SettingsHelpCopiesOnMouseReleaseAnd),
             Some(language.text(crate::i18n::Message::SettingsHelpWhenDisabledSelectionDoesNot)),
         ),
+        "middle_click_paste" => {
+            (language.text(crate::i18n::Message::SettingsHelpMiddleClickPastesClipboard), None)
+        },
+        "files_panel_side" => {
+            (language.text(crate::i18n::Message::SettingsHelpPlacesTheFilesDrawer), None)
+        },
+        "sftp_follow_session" => {
+            (language.text(crate::i18n::Message::SettingsHelpSftpFollowsTheSession), None)
+        },
         "multiline_paste_confirm" => (
             language.text(crate::i18n::Message::SettingsHelpAsksBeforeMultilineOrRisky),
             Some(
@@ -180,6 +189,9 @@ mod tests {
             "accept",
             "completion_style",
             "copy_on_select",
+            "middle_click_paste",
+            "files_panel_side",
+            "sftp_follow_session",
             "multiline_paste_confirm",
             "panel_resize",
             "cjk_bold_regular",

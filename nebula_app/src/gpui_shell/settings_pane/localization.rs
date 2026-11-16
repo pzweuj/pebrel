@@ -78,6 +78,10 @@ pub(super) fn localized_select_labels(
                 language.text(crate::i18n::Message::CommonTop),
             ]
         },
+        "files_panel_side" => vec![
+            language.text(crate::i18n::Message::SettingsOptionFilesOnTheRight),
+            language.text(crate::i18n::Message::SettingsOptionFilesOnTheLeft),
+        ],
         "tab_reveal" => vec![
             language.text(crate::i18n::Message::SettingsOptionSlide),
             language.text(crate::i18n::Message::SettingsOptionInstant),

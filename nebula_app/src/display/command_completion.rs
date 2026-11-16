@@ -292,3 +292,28 @@ mod tests {
         assert!(!nebula_path_wants_directory("cat src"));
     }
 }
+
+/// Log replay commands can contain terminal query sequences captured from a
+/// different process. Replying writes those answers into the shell's stdin,
+/// where they become the next command after the replay process exits.
+pub(crate) fn replays_untrusted_terminal_output(line: &str) -> bool {
+    let words: Vec<String> = line
+        .split_whitespace()
+        .take(4)
+        .map(|word| word.trim_matches(['"', '\'']).to_ascii_lowercase())
+        .collect();
+    matches!(
+        words.as_slice(),
+        [docker, logs, ..] if docker == "docker" && logs == "logs"
+    ) || matches!(
+        words.as_slice(),
+        [docker, compose, logs, ..]
+            if docker == "docker" && compose == "compose" && logs == "logs"
+    ) || matches!(
+        words.as_slice(),
+        [podman, logs, ..] if podman == "podman" && logs == "logs"
+    ) || matches!(
+        words.as_slice(),
+        [kubectl, logs, ..] if kubectl == "kubectl" && logs == "logs"
+    ) || matches!(words.as_slice(), [journalctl, ..] if journalctl == "journalctl")
+}

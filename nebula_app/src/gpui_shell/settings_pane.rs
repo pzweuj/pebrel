@@ -776,6 +776,9 @@ impl SettingsPane {
         match key {
             "follow_system_theme" => flag!(follow_system_theme),
             "copy_on_select" => flag!(copy_on_select),
+            "middle_click_paste" => flag!(middle_click_paste),
+            "sftp_follow_session" => flag!(sftp_follow_session),
+            "files_panel_side" => pick!(files_panel_side),
             "focus_follows_mouse" => Some((cur.focus_follows_mouse.is_some(), String::new())),
             "dim_inactive_panes" => flag!(dim_inactive_panes),
             "multiline_paste_confirm" => flag!(multiline_paste_confirm),
@@ -1249,6 +1252,9 @@ impl SettingsPane {
     }
 
     fn check_for_updates(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !nebula_settings::APPLICATION_UPDATES_ENABLED {
+            return;
+        }
         if matches!(self.about_update, AboutUpdateState::Checking) {
             return;
         }
@@ -1372,6 +1378,13 @@ impl SettingsPane {
                         cx,
                     ))
                     .child(self.switch_row(
+                        "middle_click_paste",
+                        language.text(crate::i18n::Message::SettingsMiddleClickPaste),
+                        help("middle_click_paste", language),
+                        self.runtime.middle_click_paste,
+                        cx,
+                    ))
+                    .child(self.switch_row(
                         "multiline_paste_confirm",
                         language.pick("粘贴前确认", "Confirm pastes"),
                         help("multiline_paste_confirm", language),
@@ -1399,6 +1412,19 @@ impl SettingsPane {
                         "tabs_position",
                         language.pick("标签栏位置", "Tab bar position"),
                         help("tabs_position", language),
+                        cx,
+                    ))
+                    .child(self.select_row(
+                        "files_panel_side",
+                        language.text(crate::i18n::Message::SettingsFilesDrawerSide),
+                        help("files_panel_side", language),
+                        cx,
+                    ))
+                    .child(self.switch_row(
+                        "sftp_follow_session",
+                        language.text(crate::i18n::Message::SettingsSftpFollowSession),
+                        help("sftp_follow_session", language),
+                        self.runtime.sftp_follow_session,
                         cx,
                     ))
                     .child(self.select_row(

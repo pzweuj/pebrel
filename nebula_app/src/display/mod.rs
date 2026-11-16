@@ -116,6 +116,7 @@ use chrome::{ChromeTabLayout, TabDrag, chrome_hit_with_tabs, chrome_tab_layout, 
 pub(crate) use command_completion::{
     NEBULA_GHOST_MAX, extract_program, nebula_command_hint, nebula_command_hints,
     nebula_commands_handle, nebula_is_command_position, nebula_path_wants_directory,
+    replays_untrusted_terminal_output,
 };
 pub use context_menu_model::{ContextMenuAction, ContextMenuHit, ContextMenuTarget};
 pub(crate) use file_operations::send_to_recycle_bin;
@@ -123,6 +124,7 @@ pub(crate) use input_state::{
     nebula_clear_line, nebula_input_backspace, nebula_input_char, nebula_input_delete_word,
     nebula_input_text, nebula_prompt_line_from_raw_grid,
     nebula_shell_prompt_restored_from_raw_grid, nebula_shell_ready_from_raw_grid,
+    shell_submission_prompt_restored,
 };
 #[cfg(windows)]
 pub(crate) use input_state::{nebula_input_from_raw_grid, nebula_raw_grid_row_preview};
@@ -521,31 +523,6 @@ fn restore_ssh_host_to_lists(
     if !was_hidden {
         hidden.retain(|entry| entry != host);
     }
-}
-
-/// Log replay commands can contain terminal query sequences captured from a
-/// different process. Replying writes those answers into the shell's stdin,
-/// where they become the next command after the replay process exits.
-pub(crate) fn replays_untrusted_terminal_output(line: &str) -> bool {
-    let words: Vec<String> = line
-        .split_whitespace()
-        .take(4)
-        .map(|word| word.trim_matches(['"', '\'']).to_ascii_lowercase())
-        .collect();
-    matches!(
-        words.as_slice(),
-        [docker, logs, ..] if docker == "docker" && logs == "logs"
-    ) || matches!(
-        words.as_slice(),
-        [docker, compose, logs, ..]
-            if docker == "docker" && compose == "compose" && logs == "logs"
-    ) || matches!(
-        words.as_slice(),
-        [podman, logs, ..] if podman == "podman" && logs == "logs"
-    ) || matches!(
-        words.as_slice(),
-        [kubectl, logs, ..] if kubectl == "kubectl" && logs == "logs"
-    ) || matches!(words.as_slice(), [journalctl, ..] if journalctl == "journalctl")
 }
 
 /// Texture ids for chrome logos live far above the inline-image counter

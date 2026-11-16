@@ -352,6 +352,7 @@ impl TerminalView {
             pty_failed: false,
             progress: crate::taskbar::TaskProgress::None,
             pending_runtime_submit: None,
+            pending_pwd: None,
             pending_shell_command: None,
             recovery: startup_command::SessionRecovery::default(),
             session_launch,

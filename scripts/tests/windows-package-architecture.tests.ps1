@@ -14,7 +14,23 @@ try {
         foreach ($name in @('pebrel.exe', 'pebrel-cli.exe', 'pebrel-hook.exe', 'conpty.dll', 'OpenConsole.exe')) {
             [IO.File]::WriteAllBytes((Join-Path $fixtureRoot $name), $bytes)
         }
+        $existingServer = Join-Path $fixtureRoot 'x11\yserver\yserver.exe'
+        if (Test-Path -LiteralPath $existingServer) { [IO.File]::WriteAllBytes($existingServer, $bytes) }
         Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture
+        $x11 = Join-Path $fixtureRoot 'x11\yserver'
+        New-Item -ItemType Directory -Force -Path $x11 | Out-Null
+        $server = Join-Path $x11 'yserver.exe'
+        [IO.File]::WriteAllBytes($server, $bytes)
+        Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture
+        $invalidServer = $bytes.Clone()
+        $invalidServer[68] = 0
+        [IO.File]::WriteAllBytes($server, $invalidServer)
+        $rejected = $false
+        try { Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture } catch {
+            $rejected = $_.Exception.Message -match 'yserver.exe'
+        }
+        if (-not $rejected) { throw 'Mismatched optional X display was accepted' }
+        [IO.File]::WriteAllBytes($server, $bytes)
         Copy-Item -LiteralPath (Join-Path $fixtureRoot 'pebrel-cli.exe') -Destination (Join-Path $fixtureRoot 'pebrel.com')
         Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture -CliExecutable 'pebrel.com'
         [IO.File]::WriteAllBytes((Join-Path $fixtureRoot 'pebrel.com'), [byte[]]@(0, 1, 2))

@@ -133,6 +133,45 @@ impl TerminalView {
     pub(super) fn commit_line(&mut self, cx: &mut Context<Self>) {
         self.completion_session.invalidate();
         self.sync_native_prompt();
+        // Directory discovery has its own bounded output capture. History recall
+        // can invalidate the input mirror, and remote activity can remain busy
+        // after a silent command, so it must not depend on either of those states.
+        self.capture_submitted_pwd();
+        // A silent remote shell can already be back at its prompt while the
+        // periodic activity observer still calls the previous command busy.
+        // Reconcile the verified prompt prefix before treating Enter as stdin.
+        let remote_prompt_returned = self.ssh_destination.is_some()
+            && self.command_running
+            && self.effective_program_status().is_none()
+            && !self.agent_activity.hook_seen()
+            && self
+                .running_program
+                .as_deref()
+                .and_then(crate::ai_agents::AgentKind::parse)
+                .is_none()
+            && self.session.as_ref().is_some_and(|session| {
+                let term = session.term.lock();
+                !term.mode().intersects(TermMode::ALT_SCREEN | TermMode::VI)
+                    && self.suggest.pending_command_prompt.as_deref().is_some_and(|expected| {
+                        crate::display::nebula_prompt_line_from_raw_grid(
+                            &term,
+                            term.grid().cursor.point,
+                            &self.suggest.line_buf,
+                            &self.suggest.suggest_env,
+                        )
+                        .is_some_and(|line| {
+                            crate::display::shell_submission_prompt_restored(
+                                expected,
+                                &line.prompt,
+                                &self.suggest.suggest_env,
+                                term.nebula_prompt_input_point().is_some(),
+                            )
+                        })
+                    })
+            });
+        if remote_prompt_returned {
+            self.finish_foreground_command(None, cx);
+        }
         let agent_active =
             self.running_program.as_deref().and_then(crate::ai_agents::AgentKind::parse).is_some();
         let command_already_active =

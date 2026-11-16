@@ -3,6 +3,9 @@
 ## Status
 
 Proposed with the fix for #557; native validation is recorded in the PR.
+Shells that never report a directory are followed by
+[2026-11-13-unreported-cwd-probe.md](2026-11-13-unreported-cwd-probe.md).
+OSC and title following in this note stays in force.
 
 ## Context
 

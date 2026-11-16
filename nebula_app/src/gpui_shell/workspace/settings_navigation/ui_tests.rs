@@ -70,7 +70,7 @@ fn tab_bounds(selector: &'static str, cx: &mut VisualTestContext) -> gpui::Bound
         window.refresh();
         window.draw(cx).clear(cx);
     });
-    cx.debug_bounds(selector).expect("visible tab bounds")
+    cx.debug_bounds(selector).unwrap_or_else(|| panic!("visible tab bounds: {selector}"))
 }
 
 fn numbered_tab_shortcuts() -> [&'static str; 2] {
@@ -210,16 +210,34 @@ fn closing_last_regular_tab_keeps_settings_until_it_is_closed(cx: &mut TestAppCo
 
 #[gpui::test]
 fn density_changes_real_tab_bounds_and_sidebar_drag_pitch(cx: &mut TestAppContext) {
+    use crate::gpui_shell::settings_fixture::{SettingsBytesGuard, lock_theme_studio};
     use nebula_settings::{DensityName, TabsPositionName};
+    let _lock = lock_theme_studio();
+    let _settings = SettingsBytesGuard::capture();
 
     let (_directory, workspace, mut cx) = open_workspace(8, cx);
-    click_tab("top-tab-0", &mut cx);
+    // The initial settings tab can scroll tab 0 outside this eight-tab strip.
+    // Establish the layout-test precondition without clicking a clipped row.
+    cx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            workspace.activate_top_tab(0, window, cx);
+            assert!(!workspace.settings_open);
+        })
+    });
     for position in [TabsPositionName::Sidebar, TabsPositionName::Top] {
         for (density, height, gap, title_height) in [
             (DensityName::Standard, 34.0, 8.0, 48.0),
             (DensityName::Compact, 32.0, 4.0, 48.0),
             (DensityName::Standard, 34.0, 8.0, 48.0),
         ] {
+            // Appearance/activation observers reload saved preferences. Use the
+            // same source as a real layout selection, rather than relying on
+            // the factory default accidentally matching the fixture's mode.
+            nebula_settings::persist_keys(&[
+                ("tabs_position", position.settings_value().to_owned()),
+                ("density", density.settings_value().to_owned()),
+            ])
+            .unwrap();
             workspace.update(&mut cx, |workspace, cx| {
                 workspace.tabs_position = position;
                 workspace.density = density;
@@ -264,4 +282,70 @@ fn density_changes_real_tab_bounds_and_sidebar_drag_pitch(cx: &mut TestAppContex
             }
         }
     }
+}
+
+#[gpui::test]
+fn top_terminal_tabs_switch_and_hover_close_the_actual_session(cx: &mut TestAppContext) {
+    let (_directory, workspace, mut cx) = open_workspace(0, cx);
+    let mut inputs = Vec::new();
+    let ids = cx.update(|window, cx| {
+        workspace.update(cx, |workspace, cx| {
+            for name in ["Server Alpha", "Server Beta"] {
+                let pane = workspace.new_pane(
+                    (80, 24),
+                    crate::gpui_shell::terminal::view::TerminalLaunch::Local {
+                        cwd: None,
+                        shell: Some(nebula_terminal::tty::Shell::new(
+                            "pebrel-test-missing-shell-executable".into(),
+                            vec![],
+                        )),
+                        shell_name: None,
+                    },
+                    None,
+                    window,
+                    cx,
+                );
+                inputs.push(pane.view.update(cx, |view, _| view.install_completion_test_session()));
+                let id = pane.id;
+                workspace.insert_tab_at(
+                    workspace.tabs.len(),
+                    WorkspaceTab::Terminal {
+                        tree: nebula_split::SplitTree::Leaf(id),
+                        panes: vec![pane],
+                        focused: id,
+                        zoomed: false,
+                        broadcast: false,
+                    },
+                    TabMeta { custom_name: Some(name.into()), ..Default::default() },
+                );
+            }
+            workspace.close_top_tab(2, window, cx);
+            workspace.activate_top_tab(0, window, cx);
+            [
+                workspace.tabs[0].focused_view().unwrap().entity_id(),
+                workspace.tabs[1].focused_view().unwrap().entity_id(),
+            ]
+        })
+    });
+    let second = tab_bounds("top-tab-1", &mut cx);
+    cx.simulate_click(
+        gpui::point(second.left() + px(8.0), second.center().y),
+        Modifiers::default(),
+    );
+    cx.run_until_parked();
+    workspace.read_with(&cx, |workspace, _| {
+        assert_eq!(workspace.active, 1);
+        assert_eq!(workspace.tabs[1].focused_view().unwrap().entity_id(), ids[1]);
+    });
+    let first = tab_bounds("top-tab-0", &mut cx);
+    cx.simulate_mouse_move(first.center(), None, Modifiers::default());
+    let close = tab_bounds("top-close-tab-0", &mut cx);
+    assert!(first.contains(&close.center()));
+    cx.simulate_click(close.center(), Modifiers::default());
+    cx.run_until_parked();
+    workspace.read_with(&cx, |workspace, _| {
+        assert_eq!(workspace.tabs.len(), 1);
+        assert_eq!(workspace.active, 0);
+        assert_eq!(workspace.tabs[0].focused_view().unwrap().entity_id(), ids[1]);
+    });
 }

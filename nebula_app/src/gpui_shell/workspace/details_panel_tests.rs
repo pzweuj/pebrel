@@ -446,3 +446,47 @@ fn document_outline_and_files_share_one_slot_and_one_width(cx: &mut TestAppConte
     assert!(cx.debug_bounds("markdown-outline-list").is_none());
     assert_eq!(cx.debug_bounds("workspace-details-slot").unwrap().size.width, width);
 }
+
+#[gpui::test]
+fn files_panel_can_swap_between_right_and_left_of_the_session(cx: &mut TestAppContext) {
+    use crate::gpui_shell::settings_fixture::{SettingsBytesGuard, lock_theme_studio};
+
+    let _fixture_guard = lock_theme_studio();
+    let _guard = SettingsBytesGuard::capture();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("swap.md");
+    std::fs::write(&path, "# Heading\n\nBody").unwrap();
+    let (workspace, mut cx) = open(path, cx);
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let swap = cx.debug_bounds("files-panel-side").unwrap();
+    let right_slot = cx.debug_bounds("workspace-details-slot").unwrap();
+    let right_handle = cx.debug_bounds("workspace-details-resize").unwrap();
+    assert!(right_handle.center().x <= right_slot.left() + px(2.0));
+
+    cx.simulate_click(swap.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(workspace.read_with(&cx, |view, cx| view.files_panel_on_left(cx)));
+    let left_slot = cx.debug_bounds("workspace-details-slot").unwrap();
+    let left_handle = cx.debug_bounds("workspace-details-resize").unwrap();
+    assert!(left_slot.left() < right_slot.left());
+    assert!((f32::from(left_handle.center().x - left_slot.right())).abs() <= 2.0);
+
+    // Dragging rightward on the inner edge grows a left-docked drawer.
+    let start = left_handle.center();
+    let target = point(start.x + px(40.0), start.y);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(cx.debug_bounds("workspace-details-slot").unwrap().size.width > left_slot.size.width);
+
+    let swap = cx.debug_bounds("files-panel-side").unwrap();
+    cx.simulate_click(swap.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(!workspace.read_with(&cx, |view, cx| view.files_panel_on_left(cx)));
+}

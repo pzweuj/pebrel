@@ -101,6 +101,7 @@ impl AssetSource for NebulaAssets {
             .iter()
             .chain(AGENT_ICONS)
             .chain(COMPRESSED_ICONS)
+            .chain(super::file_icons::ASSETS)
             .find(|(name, _)| *name == path)
         {
             return if bytes.starts_with(&[0x1f, 0x8b]) {
@@ -119,6 +120,7 @@ impl AssetSource for NebulaAssets {
                 .iter()
                 .chain(AGENT_ICONS)
                 .chain(COMPRESSED_ICONS)
+                .chain(super::file_icons::ASSETS)
                 .filter(|(name, _)| name.starts_with(path))
                 .map(|(name, _)| SharedString::from(*name)),
         );
