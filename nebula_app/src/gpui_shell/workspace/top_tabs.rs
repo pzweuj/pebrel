@@ -43,6 +43,13 @@ const TOP_TAB_NUDGE_W: f32 = 22.0;
 /// 拖拽越界自动滚的触发带宽：指针进到视口左/右这么近就开始滚。
 const TOP_TAB_EDGE_BAND: f32 = 24.0;
 
+/// 左侧展开栏打开时，顶部标签在既有标题栏左内边距之外需要额外让出的宽度。
+/// 使首个 tab 始终与终端卡片左缘对齐（`drawer_width + TOP_TAB_LEFT_INSET`），
+/// 同时避免在 macOS 上与系统交通灯的 `base_left_inset` 重复叠加。
+fn left_drawer_extra_offset(drawer_width: f32, base_left_inset: f32) -> f32 {
+    (drawer_width + TOP_TAB_LEFT_INSET - base_left_inset).max(0.0)
+}
+
 fn tab_width(viewport_w: f32, count: usize) -> f32 {
     if count == 0 || viewport_w <= 1.0 {
         return TOP_TAB_MAX_W;
@@ -123,6 +130,7 @@ impl NebulaWorkspace {
         &self,
         settings_active: bool,
         align_with_native_controls: bool,
+        base_left_inset: f32,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -151,9 +159,16 @@ impl NebulaWorkspace {
         let symbol_family: SharedString = crate::font_install::SYMBOL_FONT_FAMILY.into();
         let label_px = settings.map(|settings| settings.ui_font_size_px).unwrap_or(15.0);
         let port_forward_w = if port_forward_button.is_some() { 32.0 } else { 0.0 };
-        let tab_capacity_w =
-            (f32::from(window.viewport_size().width) - TOP_TAB_RESERVED_W - port_forward_w)
-                .max(TOP_TAB_MIN_W);
+        let left_drawer = self.left_details_panel_layout(window, cx);
+        let left_drawer_reserved_w = match left_drawer {
+            Some((width, true)) => left_drawer_extra_offset(width, base_left_inset),
+            _ => 0.0,
+        };
+        let tab_capacity_w = (f32::from(window.viewport_size().width)
+            - TOP_TAB_RESERVED_W
+            - port_forward_w
+            - left_drawer_reserved_w)
+            .max(TOP_TAB_MIN_W);
         let tab_w = tab_width(tab_capacity_w, self.top_tab_count());
         let strip_w = tab_strip_width(tab_w, self.top_tab_count());
         // 溢出时两端各让出一枚翻页按钮。这个反馈是单调的：`tab_w` 已被
@@ -556,11 +571,32 @@ impl NebulaWorkspace {
             .collect::<Vec<_>>();
 
         let menu_workspace = cx.entity().downgrade();
+        let left_drawer_instant = super::tab_reveal_instant(cx);
+        let left_drawer_spacer = left_drawer.map(|(drawer_width, open)| {
+            let spacer = div().h_full().flex_shrink_0();
+            if left_drawer_instant {
+                spacer
+                    .w(px(left_drawer_extra_offset(drawer_width, base_left_inset)))
+                    .into_any_element()
+            } else {
+                spacer
+                    .with_animation(
+                        ("top-tabs-left-drawer-slide", open as usize),
+                        Animation::new(Duration::from_millis(240)).with_easing(ease_out_quint()),
+                        move |spacer, t| {
+                            let current = drawer_width * if open { t } else { 1.0 - t };
+                            spacer.w(px(left_drawer_extra_offset(current, base_left_inset)))
+                        },
+                    )
+                    .into_any_element()
+            }
+        });
 
         h_flex()
             .size_full()
             .min_w_0()
             .items_center()
+            .children(left_drawer_spacer)
             .child(
                 // TabView 贴住标题栏底边；只让 tab 与其相邻操作按钮下沉，
                 // 标题栏两侧的独立工具仍保持垂直居中。
@@ -766,16 +802,23 @@ impl NebulaWorkspace {
         if self.tabs_position != nebula_settings::TabsPositionName::Top {
             return;
         }
+        let base_left_inset = crate::platform::window_chrome::layout(window)
+            .map_or(TOP_TAB_LEFT_INSET, |layout| layout.left_inset);
+        let left_drawer_extra = match self.left_details_panel_layout(window, cx) {
+            Some((width, true)) => left_drawer_extra_offset(width, base_left_inset),
+            _ => 0.0,
+        };
         let capacity_w =
-            (f32::from(window.viewport_size().width) - TOP_TAB_RESERVED_W).max(TOP_TAB_MIN_W);
+            (f32::from(window.viewport_size().width) - TOP_TAB_RESERVED_W - left_drawer_extra)
+                .max(TOP_TAB_MIN_W);
         let tab_w = tab_width(capacity_w, self.top_tab_count());
         let strip_w = tab_strip_width(tab_w, self.top_tab_count());
         if !strip_overflows(strip_w, capacity_w) {
             return;
         }
         let viewport_w = (capacity_w - TOP_TAB_NUDGE_W * 2.0).max(TOP_TAB_MIN_W);
-        // 视口左缘 = 左内边距 + 左侧翻页按钮。
-        let left = TOP_TAB_LEFT_INSET + TOP_TAB_NUDGE_W;
+        // 视口左缘 = 左内边距 + 左侧展开栏让位 + 左侧翻页按钮。
+        let left = base_left_inset + left_drawer_extra + TOP_TAB_NUDGE_W;
         let right = left + viewport_w;
         let dir = if pointer_x <= left + TOP_TAB_EDGE_BAND {
             -1.0
@@ -826,6 +869,17 @@ mod tests {
         assert_eq!(nudge_offset(-150.0, 124.0, 1.0, 1000.0, 800.0), -200.0);
         // 首端：再往左也只到 0。
         assert_eq!(nudge_offset(-50.0, 124.0, -1.0, 1000.0, 800.0), 0.0);
+    }
+
+    #[test]
+    fn left_drawer_extra_offset_aligns_tabs_without_duplicating_native_inset() {
+        // Windows / Linux: base inset is TOP_TAB_LEFT_INSET (8px), so extra equals drawer width.
+        assert_eq!(left_drawer_extra_offset(320.0, TOP_TAB_LEFT_INSET), 320.0);
+        assert_eq!(left_drawer_extra_offset(0.0, TOP_TAB_LEFT_INSET), 0.0);
+        // macOS: base inset reserves traffic lights (e.g. 78px); drawer width must not double-add it.
+        assert_eq!(left_drawer_extra_offset(320.0, 78.0), 320.0 + TOP_TAB_LEFT_INSET - 78.0);
+        // While sliding past traffic lights, extra stays 0 until drawer clears them.
+        assert_eq!(left_drawer_extra_offset(40.0, 78.0), 0.0);
     }
 
     #[test]

@@ -142,6 +142,33 @@ impl NebulaWorkspace {
         })
     }
 
+    fn details_panel_display_width(&self, window: &Window) -> f32 {
+        if !self.side_panel.open && self.details_panel.closing_width.is_some() {
+            self.details_panel.closing_width.unwrap()
+        } else if self.details_panel.resize.is_some() {
+            self.details_panel.width
+        } else {
+            panel_width(self.details_panel.width, f32::from(window.viewport_size().width))
+        }
+    }
+
+    /// 左侧文件/详情抽屉的宽度与展开方向；停靠右侧、专注模式或已关闭且无收起
+    /// 动画时返回 `None`，供顶部标签栏与拖拽滚动同步让位。
+    pub(super) fn left_details_panel_layout(
+        &self,
+        window: &Window,
+        cx: &App,
+    ) -> Option<(f32, bool)> {
+        if !self.files_panel_on_left(cx) || self.reader_focus_active(cx) {
+            return None;
+        }
+        let open = self.side_panel.open;
+        if !open && (tab_reveal_instant(cx) || !self.side_panel_anim_armed) {
+            return None;
+        }
+        Some((self.details_panel_display_width(window), open))
+    }
+
     fn left_sidebar_occupied_width(&self) -> f32 {
         if self.tabs_position == nebula_settings::TabsPositionName::Sidebar
             && !self.sidebar_collapsed
@@ -388,13 +415,7 @@ impl NebulaWorkspace {
         if open {
             self.details_panel.closing_width = None;
         }
-        let width = if !open && self.details_panel.closing_width.is_some() {
-            self.details_panel.closing_width.unwrap()
-        } else if self.details_panel.resize.is_some() {
-            self.details_panel.width
-        } else {
-            panel_width(self.details_panel.width, f32::from(window.viewport_size().width))
-        };
+        let width = self.details_panel_display_width(window);
         let section = self.active_document_section(cx);
         let remote = open && section.is_none() && self.route_remote_browser(window, cx);
         let panel = if section.is_some() {
@@ -475,11 +496,7 @@ impl NebulaWorkspace {
         if !self.side_panel.open || self.reader_focus_active(cx) || self.settings_open {
             return None;
         }
-        let width = if self.details_panel.resize.is_some() {
-            self.details_panel.width
-        } else {
-            panel_width(self.details_panel.width, f32::from(window.viewport_size().width))
-        };
+        let width = self.details_panel_display_width(window);
         let on_left = self.files_panel_on_left(cx);
         let sidebar = if on_left { self.left_sidebar_occupied_width() } else { 0.0 };
         Some(

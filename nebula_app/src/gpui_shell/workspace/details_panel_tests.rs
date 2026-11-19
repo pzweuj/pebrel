@@ -490,3 +490,78 @@ fn files_panel_can_swap_between_right_and_left_of_the_session(cx: &mut TestAppCo
     cx.update(|window, cx| window.draw(cx).clear(cx));
     assert!(!workspace.read_with(&cx, |view, cx| view.files_panel_on_left(cx)));
 }
+
+#[gpui::test]
+fn top_tabs_shift_right_of_left_files_panel_and_resize_handle(cx: &mut TestAppContext) {
+    use crate::gpui_shell::settings_fixture::{SettingsBytesGuard, lock_theme_studio};
+
+    let _fixture_guard = lock_theme_studio();
+    let _guard = SettingsBytesGuard::capture();
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("top-tabs-left-drawer.md");
+    std::fs::write(&path, "# Heading\n\nBody").unwrap();
+    let (workspace, mut cx) = open(path, cx);
+    cx.simulate_resize(gpui::size(px(1200.0), px(800.0)));
+    cx.update(|window, cx| {
+        workspace.update(cx, |view, cx| {
+            view.tabs_position = nebula_settings::TabsPositionName::Top;
+            cx.notify();
+        });
+        window.draw(cx).clear(cx);
+    });
+
+    // When the files drawer is on the right, the first top tab starts at the window's left inset.
+    let right_docked_tab = cx.debug_bounds("top-tab-0").unwrap();
+    assert!(right_docked_tab.left() < px(120.0));
+
+    // Swap the files drawer to the left: top tabs must clear both the drawer and its resize handle.
+    let swap = cx.debug_bounds("files-panel-side").unwrap();
+    cx.simulate_click(swap.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(workspace.read_with(&cx, |view, cx| view.files_panel_on_left(cx)));
+    let left_slot = cx.debug_bounds("workspace-details-slot").unwrap();
+    let left_handle = cx.debug_bounds("workspace-details-resize").unwrap();
+    let shifted_tab = cx.debug_bounds("top-tab-0").unwrap();
+    assert!(
+        shifted_tab.left() >= left_slot.right(),
+        "top tab {:?} overlapped left drawer {:?}",
+        shifted_tab,
+        left_slot
+    );
+    assert!(
+        shifted_tab.left() >= left_handle.right(),
+        "top tab {:?} overlapped left drawer resize handle {:?}",
+        shifted_tab,
+        left_handle
+    );
+
+    // Growing the left drawer pushes the top tabs further right without overlapping.
+    let start = left_handle.center();
+    let target = point(start.x + px(48.0), start.y);
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(target, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(target, MouseButton::Left, Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+
+    let wider_slot = cx.debug_bounds("workspace-details-slot").unwrap();
+    let wider_handle = cx.debug_bounds("workspace-details-resize").unwrap();
+    let wider_tab = cx.debug_bounds("top-tab-0").unwrap();
+    assert!(wider_slot.right() > left_slot.right());
+    assert!(wider_tab.left() >= wider_slot.right());
+    assert!(wider_tab.left() >= wider_handle.right());
+
+    // Closing the left drawer returns the first top tab to the left edge.
+    let close = cx.debug_bounds("toggle-right-sidebar").unwrap();
+    cx.simulate_click(close.center(), Modifiers::default());
+    cx.run_until_parked();
+    cx.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(!workspace.read_with(&cx, |view, _| view.side_panel.open));
+    assert!(
+        cx.debug_bounds("workspace-details-slot").is_none_or(|slot| slot.size.width <= px(0.5))
+    );
+    let restored_tab = cx.debug_bounds("top-tab-0").unwrap();
+    assert_eq!(restored_tab.left(), right_docked_tab.left());
+}

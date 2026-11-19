@@ -171,6 +171,8 @@ impl NebulaWorkspace {
         let title_bar_height = effective_title_bar_height(self.density, native_layout);
         let align_with_native_controls =
             native_layout.is_some_and(|layout| layout.native_controls_visible);
+        let top_tabs_base_left_inset =
+            native_layout.map_or(top_tabs::TOP_TAB_LEFT_INSET, |layout| layout.left_inset);
         let bar = TitleBar::new()
             .on_close_window(cx.listener(|workspace, _, window, cx| {
                 // Linux 的客户端标题栏默认直接销毁窗口；必须复用系统关窗的会话与文档守卫。
@@ -201,6 +203,7 @@ impl NebulaWorkspace {
                 bar.child(self.render_top_title_bar(
                     settings_active,
                     align_with_native_controls,
+                    top_tabs_base_left_inset,
                     window,
                     cx,
                 ))

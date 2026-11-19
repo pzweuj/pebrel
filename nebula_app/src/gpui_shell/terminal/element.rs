@@ -38,6 +38,8 @@ pub(in crate::gpui_shell) mod snapshot_probe;
 
 #[path = "element/app_colors.rs"]
 mod app_colors;
+#[path = "element/keyword_colors.rs"]
+mod keyword_colors;
 use app_colors::{resolve_app_colors_into, resolve_text_foreground};
 
 pub struct TerminalElement {
@@ -296,6 +298,9 @@ impl Element for TerminalElement {
             view.drive_pending_remote_dir(cx);
         });
         let overrides = snap.color_overrides;
+        if !alternate_screen {
+            keyword_colors::apply_keyword_colors(&mut snap);
+        }
         self.resolve_app_colors(&mut snap, &mut dashed, &theme, &overrides, cx);
         if let Some((_, source)) = &mut art_source {
             self.resolve_app_colors(source, &mut Default::default(), &theme, &overrides, cx);
