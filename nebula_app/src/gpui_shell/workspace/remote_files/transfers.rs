@@ -45,7 +45,7 @@ impl NebulaWorkspace {
         let wake = Arc::new(move || {
             let _ = wake_tx.send(());
         });
-        let controller = SftpController::new_at(destination.clone(), path, wake)
+        let controller = SftpController::new_idle_at(destination.clone(), path, wake)
             .map_err(|error| error.to_string())?;
         self.remote_browser.transfer = Some(controller.clone());
 

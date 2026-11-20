@@ -26,10 +26,13 @@ use std::future::{Future, poll_fn};
 use std::io;
 use std::path::Path;
 use std::pin::Pin;
+use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::task::Poll;
+use std::time::{Duration, UNIX_EPOCH};
 
 use russh_sftp::client::SftpSession;
+use russh_sftp::client::fs::File as SftpFile;
 use russh_sftp::protocol::OpenFlags;
 use tokio::io::{AsyncReadExt, AsyncSeekExt, AsyncWriteExt};
 
@@ -230,8 +233,10 @@ pub(crate) async fn upload_stream(
     remote: &str,
     observer: &dyn TransferObserver,
 ) -> TransferResult<()> {
-    let mut source =
-        tokio::io::BufReader::with_capacity(LOCAL_IO_BUFFER, tokio::fs::File::open(local).await?);
+    let mut source = tokio::io::BufReader::with_capacity(
+        LOCAL_IO_BUFFER,
+        super::transaction::open_local_read(local).await?,
+    );
     let mut target = sftp
         .open_with_flags(
             remote.to_owned(),
@@ -270,29 +275,97 @@ pub(crate) async fn download_segmented(
     window: usize,
     observer: &dyn TransferObserver,
 ) -> TransferResult<DownloadOutcome> {
-    // 先把本地文件建出来，段工作者才能各自打开它并 seek 到自己的起点。
-    // 零字节文件到这里就结束——建出空文件即是正确结果。
-    let file = tokio::fs::File::create(local).await?;
+    download_segmented_with_times(sftp, remote, total, local, window, 0, observer).await
+}
+
+/// 同 [`download_segmented`]，并在关闭唯一本地句柄前顺带写入远端修改时间戳，
+/// 避免发布后再次以写模式打开目标文件触发额外 AV/索引扫描。
+pub(crate) async fn download_segmented_with_times(
+    sftp: &SftpSession,
+    remote: &str,
+    total: u64,
+    local: &Path,
+    window: usize,
+    modified: u64,
+    observer: &dyn TransferObserver,
+) -> TransferResult<DownloadOutcome> {
+    // 整个下载过程只持有**唯一**一个本地 OS 文件句柄，按偏移并发写入：
+    // 相比为每个分段各自打开一份本地句柄，这消除了 Windows 上多句柄并发
+    // 关闭引发的 Defender/AV 扫描风暴，并保证函数返回前句柄已同步关闭。
+    let create_path = local.to_owned();
+    let std_file = tokio::task::spawn_blocking(move || std::fs::File::create(&create_path))
+        .await
+        .map_err(|error| io::Error::other(format!("创建本地下载文件任务失败: {error}")))??;
+    let local_file = Arc::new(std_file);
+
     if total == 0 {
-        file.sync_all().await?;
+        let _ = close_local_file(local_file, modified, true, true).await?;
         return Ok(DownloadOutcome { written: 0, contiguous: 0 });
     }
-    drop(file);
 
     let window = if total < MIN_SEGMENTED_DOWNLOAD { 1 } else { window.max(1) };
     let plan = plan_segments(total, window);
 
-    // 顺序路径单独走：只有一段时开并发脚手架纯属浪费，而绝大多数文件
-    // （配置、脚本、源码）都落在这一支。
-    if plan.len() <= 1 {
-        let written = download_range(sftp, remote, 0, total, local, observer).await?;
-        return Ok(DownloadOutcome { written, contiguous: written });
+    let outcome = if plan.len() <= 1 {
+        async {
+            let source = sftp.open(remote.to_owned()).await?;
+            let written =
+                download_range_with_handle(source, 0, total, &local_file, observer).await?;
+            Ok::<_, TransferError>(DownloadOutcome { written, contiguous: written })
+        }
+        .await
+    } else {
+        download_multi_segment(sftp, remote, total, &plan, &local_file, observer).await
+    };
+
+    // 无论成功、失败还是取消，都必须先显式释放唯一的本地文件句柄再返回，
+    // 否则调用方随后的 rename 或 remove_file 在 Windows 上会撞上共享冲突。
+    let succeeded = outcome.is_ok();
+    let _ = close_local_file(local_file, modified, succeeded, false).await;
+    outcome
+}
+
+async fn download_multi_segment(
+    sftp: &SftpSession,
+    remote: &str,
+    total: u64,
+    plan: &[(u64, u64)],
+    local_file: &Arc<std::fs::File>,
+    observer: &dyn TransferObserver,
+) -> TransferResult<DownloadOutcome> {
+    // 先并发打开所有远端段句柄，再开始读和汇报进度：部分受限 SFTP 服务端
+    // （如低句柄上限的容器/跳板机/嵌入式 sshd）会拒绝同一文件开几十个句柄，
+    // 此时若至少拿到了一个有效句柄，就无缝降级为单句柄顺序流式下载。
+    let open_results = join_all(plan.iter().map(|_| sftp.open(remote.to_owned())).collect()).await;
+
+    let mut opened = Vec::with_capacity(plan.len());
+    let mut first_open_error = None;
+    for result in open_results {
+        match result {
+            Ok(handle) => opened.push(handle),
+            Err(error) => first_open_error = first_open_error.or(Some(error)),
+        }
+    }
+
+    if let Some(open_error) = first_open_error {
+        guard(observer)?;
+        if let Some(fallback_handle) = opened.into_iter().next() {
+            log::info!(
+                "远端 SFTP 拒绝并发打开 {} 个句柄（{open_error}），已降级为单句柄顺序下载",
+                plan.len()
+            );
+            let written =
+                download_range_with_handle(fallback_handle, 0, total, local_file, observer).await?;
+            return Ok(DownloadOutcome { written, contiguous: written });
+        }
+        return Err(open_error.into());
     }
 
     let tasks: Vec<_> = plan
         .iter()
-        .map(|&(offset, length)| async move {
-            download_range(sftp, remote, offset, length, local, observer).await
+        .zip(opened)
+        .map(|(&(offset, length), handle)| async move {
+            download_range_with_handle(handle, offset, length, local_file, observer).await
         })
         .collect();
     let results = join_all(tasks).await;
@@ -322,28 +395,22 @@ pub(crate) async fn download_segmented(
     }
 }
 
-/// 下载 `[offset, offset + length)` 这一段到本地同偏移处。
-///
-/// 远端句柄和本地句柄都是这一段私有的，所以段之间没有共享可变状态，
-/// 不需要任何锁。
-async fn download_range(
-    sftp: &SftpSession,
-    remote: &str,
+/// 下载 `[offset, offset + length)` 这一段到本地唯一文件句柄的对应偏移处。
+async fn download_range_with_handle(
+    mut source: SftpFile,
     offset: u64,
     length: u64,
-    local: &Path,
+    local_file: &Arc<std::fs::File>,
     observer: &dyn TransferObserver,
 ) -> TransferResult<u64> {
-    let mut source = sftp.open(remote.to_owned()).await?;
-    let mut target = tokio::fs::OpenOptions::new().write(true).open(local).await?;
     if offset > 0 {
         source.seek(io::SeekFrom::Start(offset)).await?;
-        target.seek(io::SeekFrom::Start(offset)).await?;
     }
 
     let capacity = usize::try_from(length).unwrap_or(LOCAL_IO_BUFFER).min(LOCAL_IO_BUFFER);
     let mut buffer = vec![0u8; capacity];
-    let mut buffered = 0;
+    let mut buffered = 0usize;
+    let mut write_offset = offset;
     let mut remaining = length;
     let mut written = 0u64;
     while remaining > 0 {
@@ -362,15 +429,72 @@ async fn download_range(
         buffered += count;
         remaining -= count as u64;
         if buffer.len() - buffered < TRANSFER_CHUNK || remaining == 0 {
-            target.write_all(&buffer[..buffered]).await?;
+            let chunk_len = buffered;
+            let file = Arc::clone(local_file);
+            let target_offset = write_offset;
+            let payload = std::mem::take(&mut buffer);
+            let (returned, write_result) = tokio::task::spawn_blocking(move || {
+                let res = write_all_at(&file, target_offset, &payload[..chunk_len]);
+                (payload, res)
+            })
+            .await
+            .map_err(|error| io::Error::other(format!("本地落盘任务失败: {error}")))?;
+            buffer = returned;
+            write_result?;
             // Report only completed local writes, never data held in our buffer.
-            target.flush().await?;
-            observer.advance(buffered as u64);
-            written += buffered as u64;
+            observer.advance(chunk_len as u64);
+            write_offset += chunk_len as u64;
+            written += chunk_len as u64;
             buffered = 0;
         }
     }
     Ok(written)
+}
+
+fn write_all_at(file: &std::fs::File, mut offset: u64, mut data: &[u8]) -> io::Result<()> {
+    #[cfg(unix)]
+    use std::os::unix::fs::FileExt as _;
+    #[cfg(windows)]
+    use std::os::windows::fs::FileExt as _;
+
+    while !data.is_empty() {
+        #[cfg(windows)]
+        let count = file.seek_write(data, offset)?;
+        #[cfg(unix)]
+        let count = file.write_at(data, offset)?;
+        if count == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::WriteZero,
+                "failed to write whole buffer to local file",
+            ));
+        }
+        data = &data[count..];
+        offset += count as u64;
+    }
+    Ok(())
+}
+
+async fn close_local_file(
+    file: Arc<std::fs::File>,
+    modified: u64,
+    apply_modified: bool,
+    sync_all: bool,
+) -> io::Result<()> {
+    tokio::task::spawn_blocking(move || {
+        if sync_all {
+            file.sync_all()?;
+        }
+        if apply_modified && modified != 0 {
+            let time = UNIX_EPOCH + Duration::from_secs(modified);
+            if let Err(error) = file.set_times(std::fs::FileTimes::new().set_modified(time)) {
+                log::warn!("无法在关闭下载句柄前设置本地文件时间戳: {error}");
+            }
+        }
+        drop(file);
+        Ok(())
+    })
+    .await
+    .map_err(|error| io::Error::other(format!("关闭本地下载句柄任务失败: {error}")))?
 }
 
 #[cfg(test)]

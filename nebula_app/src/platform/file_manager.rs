@@ -4,14 +4,77 @@ use std::process::{Command, Stdio};
 use super::Platform;
 
 pub fn open(path: &Path) -> std::io::Result<()> {
-    let res = open_command(Platform::current(), path).spawn().map(|_| ());
-    #[cfg(target_os = "linux")]
-    if res.is_err() {
-        if command("gio").arg("open").arg(path).spawn().is_ok() {
+    #[cfg(windows)]
+    {
+        return windows_shell_open(path);
+    }
+    #[cfg(not(windows))]
+    {
+        let res = open_command(Platform::current(), path).spawn().map(|_| ());
+        #[cfg(target_os = "linux")]
+        if res.is_err() {
+            if command("gio").arg("open").arg(path).spawn().is_ok() {
+                return Ok(());
+            }
+        }
+        res
+    }
+}
+
+/// On Windows, `ShellExecuteW` opens files and folders directly through the
+/// shell association without `explorer.exe`'s non-standard command-line quoting.
+/// When a file extension has no default association (`SE_ERR_NOASSOC` = 31),
+/// fall back to `"openas"` / `explorer.exe` so Windows presents the app picker.
+#[cfg(windows)]
+fn windows_shell_open(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::UI::Shell::ShellExecuteW;
+    use windows_sys::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    fn wide(value: &std::ffi::OsStr) -> Vec<u16> {
+        value.encode_wide().chain(std::iter::once(0)).collect()
+    }
+
+    let file = wide(path.as_os_str());
+    let directory =
+        path.parent().filter(|parent| !parent.as_os_str().is_empty()).map(|p| wide(p.as_os_str()));
+    let directory_ptr = directory.as_ref().map_or(std::ptr::null(), |dir| dir.as_ptr());
+
+    let open_verb: Vec<u16> = "open".encode_utf16().chain(std::iter::once(0)).collect();
+    let result = unsafe {
+        ShellExecuteW(
+            std::ptr::null_mut(),
+            open_verb.as_ptr(),
+            file.as_ptr(),
+            std::ptr::null(),
+            directory_ptr,
+            SW_SHOWNORMAL,
+        )
+    } as isize;
+    if result > 32 {
+        return Ok(());
+    }
+
+    // SE_ERR_NOASSOC (31): no default program registered for this extension.
+    if result == 31 {
+        let openas_verb: Vec<u16> = "openas".encode_utf16().chain(std::iter::once(0)).collect();
+        let openas = unsafe {
+            ShellExecuteW(
+                std::ptr::null_mut(),
+                openas_verb.as_ptr(),
+                file.as_ptr(),
+                std::ptr::null(),
+                directory_ptr,
+                SW_SHOWNORMAL,
+            )
+        } as isize;
+        if openas > 32 {
             return Ok(());
         }
+        return open_command(Platform::Windows, path).spawn().map(|_| ());
     }
-    res
+
+    Err(std::io::Error::other(format!("ShellExecuteW failed with code {result}")))
 }
 
 pub fn reveal(path: &Path) -> std::io::Result<()> {

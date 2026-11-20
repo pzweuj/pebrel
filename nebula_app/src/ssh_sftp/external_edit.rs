@@ -31,7 +31,7 @@ pub(crate) fn file_fingerprint(path: &Path) -> io::Result<([u8; 32], u64, Option
             format!("not a regular file: {}", path.display()),
         ));
     }
-    let mut file = std::fs::File::open(path)?;
+    let mut file = transaction::open_local_read_blocking(path)?;
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 65536];
     let mut total = 0u64;
@@ -45,6 +45,57 @@ pub(crate) fn file_fingerprint(path: &Path) -> io::Result<([u8; 32], u64, Option
     }
     let digest: [u8; 32] = hasher.finalize().into();
     Ok((digest, total, metadata.modified().ok()))
+}
+
+/// Sanitize a remote file name for local temporary storage (especially Windows
+/// reserved characters/device names) while keeping the original remote path untouched
+/// for uploading changes back to the server.
+pub(crate) fn sanitize_local_filename(name: &str) -> String {
+    let mut cleaned: String = name
+        .chars()
+        .map(|ch| {
+            if matches!(ch, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*') || ch.is_control()
+            {
+                '_'
+            } else {
+                ch
+            }
+        })
+        .collect();
+    // Windows rejects trailing dots and spaces in file names.
+    while cleaned.ends_with(['.', ' ']) {
+        cleaned.pop();
+    }
+    if cleaned.is_empty() || matches!(cleaned.as_str(), "." | "..") {
+        cleaned = "file".to_owned();
+    }
+    let stem = cleaned.split('.').next().unwrap_or(&cleaned).to_ascii_uppercase();
+    let is_reserved = matches!(
+        stem.as_str(),
+        "CON"
+            | "PRN"
+            | "AUX"
+            | "NUL"
+            | "COM1"
+            | "COM2"
+            | "COM3"
+            | "COM4"
+            | "COM5"
+            | "COM6"
+            | "COM7"
+            | "COM8"
+            | "COM9"
+            | "LPT1"
+            | "LPT2"
+            | "LPT3"
+            | "LPT4"
+            | "LPT5"
+            | "LPT6"
+            | "LPT7"
+            | "LPT8"
+            | "LPT9"
+    );
+    if is_reserved { format!("_{cleaned}") } else { cleaned }
 }
 
 fn detached_context(destination: &str, path: &str) -> TaskContext {
@@ -97,21 +148,27 @@ pub(crate) async fn download_for_external_edit(
     tokio::fs::create_dir_all(temp_dir)
         .await
         .map_err(|err| format!("Failed to create temporary directory: {err}"))?;
-    let local_path = temp_dir.join(&name);
+    let local_name = sanitize_local_filename(&name);
+    let local_path = temp_dir.join(&local_name);
     let context = detached_context(destination, &canonical);
     let modified = u64::from(metadata.mtime.unwrap_or(0));
-    download_file_atomic(
+    // `temp_dir` is a brand-new private folder owned by this edit session, so
+    // download directly with one synchronously closed OS file handle—avoiding
+    // a staging rename right before the external app opens the local copy.
+    if let Err(err) = transfer::download_segmented_with_times(
         &sftp,
         &canonical,
         metadata.len(),
-        modified,
         &local_path,
         limits::window_per_file(1),
-        false,
+        modified,
         &context,
     )
     .await
-    .map_err(|err| err.to_string())?;
+    {
+        let _ = transaction::remove_local_file_retry(&local_path).await;
+        return Err(err.to_string());
+    }
 
     let fingerprint_path = local_path.clone();
     let (sha256, size, local_modified) =
@@ -168,7 +225,7 @@ pub(crate) async fn upload_external_edit(
 
 #[cfg(test)]
 mod tests {
-    use super::file_fingerprint;
+    use super::{file_fingerprint, sanitize_local_filename};
 
     #[test]
     fn fingerprint_detects_same_length_content_changes() {
@@ -182,5 +239,14 @@ mod tests {
 
         assert_eq!(first_size, second_size);
         assert_ne!(first_hash, second_hash);
+    }
+
+    #[test]
+    fn sanitize_local_filename_handles_windows_illegal_chars_and_reserved_names() {
+        assert_eq!(sanitize_local_filename("app.conf"), "app.conf");
+        assert_eq!(sanitize_local_filename("2026-11-20_12:00:00.log"), "2026-11-20_12_00_00.log");
+        assert_eq!(sanitize_local_filename("CON.txt"), "_CON.txt");
+        assert_eq!(sanitize_local_filename("a<b>c?.txt"), "a_b_c_.txt");
+        assert_eq!(sanitize_local_filename("trailing. "), "trailing");
     }
 }

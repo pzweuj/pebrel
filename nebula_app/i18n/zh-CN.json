@@ -1705,6 +1705,7 @@
     "path_placeholder": "粘贴远端目录后按 Enter",
     "path_invalid": "请输入远端目录路径",
     "follow_session": "跟随会话",
+    "open_in_tab": "在标签页中打开",
     "open_with_default": "使用默认应用打开",
     "open_with_default_downloading": "正在下载 {name} 以便本地打开…",
     "open_with_default_failed": "无法使用默认应用打开 {name}：{error}",

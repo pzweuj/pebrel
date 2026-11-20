@@ -196,14 +196,36 @@ impl SftpController {
         initial_path: impl Into<String>,
         wake: WakeFn,
     ) -> io::Result<Self> {
-        crate::ssh_session::runtime()?;
         let initial_path = initial_path.into();
-        let controller = Self {
+        let controller =
+            Self::build(destination, initial_path.clone(), SftpPhase::Connecting, wake)?;
+        controller.refresh(initial_path);
+        Ok(controller)
+    }
+
+    /// 构造一个不自动触发首次 `refresh` 的控制器，供 GPUI 传输任务直接使用：
+    /// 避免每次下载/上传/删除前白开一条很快被取代的额外 SFTP 通道。
+    pub(crate) fn new_idle_at(
+        destination: impl Into<String>,
+        initial_path: impl Into<String>,
+        wake: WakeFn,
+    ) -> io::Result<Self> {
+        Self::build(destination, initial_path, SftpPhase::Ready, wake)
+    }
+
+    fn build(
+        destination: impl Into<String>,
+        initial_path: impl Into<String>,
+        phase: SftpPhase,
+        wake: WakeFn,
+    ) -> io::Result<Self> {
+        crate::ssh_session::runtime()?;
+        Ok(Self {
             state: Arc::new(Mutex::new(SftpSnapshot {
                 destination: destination.into(),
-                path: initial_path.clone(),
+                path: initial_path.into(),
                 entries: Vec::new(),
-                phase: SftpPhase::Connecting,
+                phase,
                 error: None,
                 progress: None,
             })),
@@ -212,9 +234,7 @@ impl SftpController {
             wake,
             pending_uploads: Arc::new(Mutex::new(Vec::new())),
             upload_debounce_active: Arc::new(AtomicBool::new(false)),
-        };
-        controller.refresh(initial_path);
-        Ok(controller)
+        })
     }
 
     pub fn snapshot(&self) -> SftpSnapshot {
@@ -1246,6 +1266,18 @@ async fn download_remote_entries(
             root_is_directory = metadata.is_dir();
             root_size = metadata.len();
             root_modified = u64::from(metadata.mtime.unwrap_or(0));
+        } else if entry.kind == SftpEntryKind::File {
+            // 目录列表里的 size/mtime 可能已过期；下载前实时 stat 一次，避免远端文件
+            // 变小后触发 UnexpectedEof 或变大后被静默截断。
+            let metadata = sftp.metadata(entry.path.clone()).await?;
+            root_is_directory = metadata.is_dir();
+            root_size = metadata.len();
+            root_modified = u64::from(metadata.mtime.unwrap_or(0));
+            entry.size = root_size;
+            entry.modified = root_modified;
+            if root_is_directory {
+                entry.kind = SftpEntryKind::Directory;
+            }
         }
         let desired = local_directory.join(&entry.name);
         let existing = match tokio::fs::symlink_metadata(&desired).await {
@@ -1448,17 +1480,19 @@ async fn download_file_atomic(
         context.advance(total);
         return Ok(());
     }
-    if let Err(error) =
-        transfer::download_segmented(sftp, remote, total, &temporary, window, context).await
+    if let Err(error) = transfer::download_segmented_with_times(
+        sftp, remote, total, &temporary, window, modified, context,
+    )
+    .await
     {
-        let _ = tokio::fs::remove_file(&temporary).await;
+        let _ = transaction::remove_local_file_retry(&temporary).await;
         return Err(error);
     }
     if let Err(error) = context.check_cancelled() {
-        let _ = tokio::fs::remove_file(&temporary).await;
+        let _ = transaction::remove_local_file_retry(&temporary).await;
         return Err(error);
     }
-    transaction::publish_local_file(temporary, destination, modified, context).await
+    transaction::publish_local_file(temporary, destination, modified, true, context).await
 }
 
 async fn delete_remote_entry(

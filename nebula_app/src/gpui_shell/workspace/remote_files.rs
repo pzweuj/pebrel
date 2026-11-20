@@ -661,12 +661,7 @@ impl NebulaWorkspace {
             return;
         }
         if open && row.kind == SftpEntryKind::File {
-            self.open_remote_document(
-                self.remote_browser.destination.clone(),
-                row.path,
-                window,
-                cx,
-            );
+            self.open_remote_file_with_default_app(row, window, cx);
             return;
         }
         self.remote_browser.selection.select_only(&row.path);

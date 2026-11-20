@@ -28,6 +28,7 @@ struct Files {
     data: Vec<u8>,
     short_reads: bool,
     reject_writes: bool,
+    max_open_handles: Option<usize>,
     cancel_after_read: Option<Arc<Progress>>,
 }
 
@@ -58,8 +59,14 @@ impl russh_sftp::server::Handler for Peer {
         flags: OpenFlags,
         _: FileAttributes,
     ) -> Result<Handle, StatusCode> {
-        if flags.contains(OpenFlags::TRUNCATE) {
-            self.files.lock().unwrap().data.clear();
+        {
+            let mut files = self.files.lock().unwrap();
+            if files.max_open_handles.is_some_and(|limit| self.handles.len() >= limit) {
+                return Err(StatusCode::Failure);
+            }
+            if flags.contains(OpenFlags::TRUNCATE) {
+                files.data.clear();
+            }
         }
         let handle = id.to_string();
         self.handles.insert(handle.clone());
@@ -239,6 +246,78 @@ fn buffered_upload_still_propagates_server_write_errors() {
         files.lock().unwrap().reject_writes = true;
         assert!(upload_stream(&session, &source, "remote", &Progress::default()).await.is_err());
         assert!(files.lock().unwrap().data.is_empty());
+        session.close().await.unwrap();
+    });
+}
+
+#[test]
+fn handle_limited_server_falls_back_to_single_stream_download() {
+    run(async {
+        let (files, session) = peer().await;
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("fallback.bin");
+        let size = 4 * TRANSFER_CHUNK + 519;
+        let data: Vec<u8> = (0..size).map(|i| ((i * 29 + 7) % 251) as u8).collect();
+        {
+            let mut guard = files.lock().unwrap();
+            guard.data = data.clone();
+            guard.max_open_handles = Some(2);
+        }
+        let downloaded = Progress::default();
+        let outcome = download_segmented(&session, "remote", size as u64, &target, 16, &downloaded)
+            .await
+            .unwrap();
+        assert_eq!((outcome.written, outcome.contiguous), (size as u64, size as u64));
+        assert_eq!(downloaded.bytes.load(Ordering::SeqCst), size as u64);
+        assert_eq!(std::fs::read(&target).unwrap(), data);
+        session.close().await.unwrap();
+    });
+}
+
+#[test]
+fn download_segmented_closes_local_handle_and_applies_mtime_before_returning() {
+    run(async {
+        let (files, session) = peer().await;
+        let directory = tempfile::tempdir().unwrap();
+        let staging = directory.path().join(".report.bin.nebula-download-test");
+        let published = directory.path().join("report.bin");
+        let size = 3 * TRANSFER_CHUNK + 101;
+        let data: Vec<u8> = (0..size).map(|i| ((i * 17 + 3) % 251) as u8).collect();
+        files.lock().unwrap().data = data.clone();
+
+        let modified = 1_700_000_123u64;
+        let downloaded = Progress::default();
+        let outcome = download_segmented_with_times(
+            &session,
+            "remote",
+            size as u64,
+            &staging,
+            8,
+            modified,
+            &downloaded,
+        )
+        .await
+        .unwrap();
+        assert_eq!((outcome.written, outcome.contiguous), (size as u64, size as u64));
+
+        // Immediately rename and verify exclusive access is free on Windows.
+        std::fs::rename(&staging, &published).unwrap();
+        #[cfg(windows)]
+        {
+            use std::os::windows::fs::OpenOptionsExt as _;
+            let exclusive =
+                std::fs::OpenOptions::new().read(true).write(true).share_mode(0).open(&published);
+            assert!(exclusive.is_ok(), "download must close its local handle before returning");
+        }
+        let mtime = std::fs::metadata(&published)
+            .unwrap()
+            .modified()
+            .unwrap()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_secs();
+        assert_eq!(mtime, modified);
+        assert_eq!(std::fs::read(&published).unwrap(), data);
         session.close().await.unwrap();
     });
 }

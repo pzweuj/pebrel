@@ -338,11 +338,101 @@ pub(super) async fn upload_file_checked(
     result
 }
 
+const LOCAL_FS_RETRY_DELAYS_MS: &[u64] = &[15, 25, 40, 60, 80, 100, 120, 150, 150, 200, 250];
+
+pub(super) fn is_transient_local_sharing_error(error: &io::Error) -> bool {
+    #[cfg(windows)]
+    {
+        // ERROR_ACCESS_DENIED (5) and ERROR_SHARING_VIOLATION (32) occur transiently on
+        // Windows when Defender/AV/Search/Explorer scans a freshly closed file.
+        matches!(error.raw_os_error(), Some(32 | 5))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = error;
+        false
+    }
+}
+
+pub(super) fn retry_local_fs_blocking<T, F>(mut op: F) -> io::Result<T>
+where
+    F: FnMut() -> io::Result<T>,
+{
+    let mut attempt = 0usize;
+    loop {
+        match op() {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if is_transient_local_sharing_error(&error)
+                    && attempt < LOCAL_FS_RETRY_DELAYS_MS.len() =>
+            {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    LOCAL_FS_RETRY_DELAYS_MS[attempt],
+                ));
+                attempt += 1;
+            },
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+pub(super) async fn retry_local_fs<T, F, Fut>(
+    cancel: Option<&TaskContext>,
+    mut op: F,
+) -> io::Result<T>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = io::Result<T>>,
+{
+    let mut attempt = 0usize;
+    loop {
+        match op().await {
+            Ok(value) => return Ok(value),
+            Err(error)
+                if is_transient_local_sharing_error(&error)
+                    && attempt < LOCAL_FS_RETRY_DELAYS_MS.len() =>
+            {
+                if cancel.is_some_and(TaskContext::cancelled) {
+                    return Err(io::Error::new(io::ErrorKind::Interrupted, "操作已取消"));
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(
+                    LOCAL_FS_RETRY_DELAYS_MS[attempt],
+                ))
+                .await;
+                attempt += 1;
+            },
+            Err(error) => return Err(error),
+        }
+    }
+}
+
+pub(super) fn open_local_read_blocking(path: &Path) -> io::Result<std::fs::File> {
+    retry_local_fs_blocking(|| std::fs::File::open(path))
+}
+
+pub(super) async fn open_local_read(path: &Path) -> io::Result<tokio::fs::File> {
+    let owned = path.to_owned();
+    let std_file = tokio::task::spawn_blocking(move || open_local_read_blocking(&owned))
+        .await
+        .map_err(|error| io::Error::other(format!("打开本地文件任务失败: {error}")))??;
+    Ok(tokio::fs::File::from_std(std_file))
+}
+
+pub(super) async fn remove_local_file_retry(path: &Path) -> io::Result<()> {
+    match retry_local_fs(None, || tokio::fs::remove_file(path)).await {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error),
+    }
+}
+
 async fn set_local_modified(path: PathBuf, modified: u64) -> io::Result<()> {
     tokio::task::spawn_blocking(move || {
-        let file = std::fs::OpenOptions::new().write(true).open(path)?;
         let time = UNIX_EPOCH + std::time::Duration::from_secs(modified);
-        file.set_times(std::fs::FileTimes::new().set_modified(time))
+        retry_local_fs_blocking(|| {
+            let file = std::fs::OpenOptions::new().write(true).open(&path)?;
+            file.set_times(std::fs::FileTimes::new().set_modified(time))
+        })
     })
     .await
     .map_err(|error| io::Error::other(format!("设置本地文件时间戳任务失败: {error}")))?
@@ -352,6 +442,7 @@ pub(super) async fn publish_local_file(
     staging: PathBuf,
     destination: &Path,
     modified: u64,
+    modified_applied_to_staging: bool,
     context: &TaskContext,
 ) -> SftpResult<()> {
     let existing = match tokio::fs::symlink_metadata(destination).await {
@@ -363,9 +454,11 @@ pub(super) async fn publish_local_file(
     if existing.as_ref().is_some_and(|metadata| metadata.file_type().is_symlink()) {
         let write_result = async {
             context.check_cancelled()?;
-            let mut source = tokio::fs::File::open(&staging).await?;
-            let mut target =
-                tokio::fs::OpenOptions::new().write(true).truncate(true).open(destination).await?;
+            let mut source = open_local_read(&staging).await?;
+            let mut target = retry_local_fs(Some(context), || async {
+                tokio::fs::OpenOptions::new().write(true).truncate(true).open(destination).await
+            })
+            .await?;
             let mut buffer = vec![0; 32 * 1024];
             loop {
                 context.check_cancelled()?;
@@ -387,7 +480,7 @@ pub(super) async fn publish_local_file(
             ))
             .into());
         }
-        let _ = tokio::fs::remove_file(&staging).await;
+        let _ = remove_local_file_retry(&staging).await;
         if modified != 0
             && let Err(error) = set_local_modified(destination.to_owned(), modified).await
         {
@@ -403,7 +496,9 @@ pub(super) async fn publish_local_file(
         .into());
     }
     if let Some(metadata) = existing.as_ref() {
-        tokio::fs::set_permissions(&staging, metadata.permissions()).await?;
+        let permissions = metadata.permissions();
+        retry_local_fs(Some(context), || tokio::fs::set_permissions(&staging, permissions.clone()))
+            .await?;
     }
 
     let nonce = TRANSFER_NONCE.fetch_add(1, Ordering::Relaxed);
@@ -412,13 +507,17 @@ pub(super) async fn publish_local_file(
     let result = async {
         let _publish = context.begin_publish()?;
         if existing.is_none() {
-            tokio::fs::rename(&staging, destination).await?;
+            retry_local_fs(None, || tokio::fs::rename(&staging, destination)).await?;
             return Ok::<_, SftpError>(());
         }
 
-        tokio::fs::rename(destination, &backup).await?;
-        if let Err(publish_error) = tokio::fs::rename(&staging, destination).await {
-            if let Err(restore_error) = tokio::fs::rename(&backup, destination).await {
+        retry_local_fs(None, || tokio::fs::rename(destination, &backup)).await?;
+        if let Err(publish_error) =
+            retry_local_fs(None, || tokio::fs::rename(&staging, destination)).await
+        {
+            if let Err(restore_error) =
+                retry_local_fs(None, || tokio::fs::rename(&backup, destination)).await
+            {
                 preserve_staging = true;
                 return Err(io::Error::other(format!(
                     "替换本地文件失败，且旧文件自动恢复失败；旧文件位于 {}，新文件位于 {}。发布错误: {publish_error}；恢复错误: {restore_error}",
@@ -429,7 +528,7 @@ pub(super) async fn publish_local_file(
             }
             return Err(publish_error.into());
         }
-        if let Err(error) = tokio::fs::remove_file(&backup).await {
+        if let Err(error) = remove_local_file_retry(&backup).await {
             log::warn!("本地替换已完成，但旧文件备份清理失败（{}）: {error}", backup.display());
         }
         Ok(())
@@ -437,10 +536,11 @@ pub(super) async fn publish_local_file(
     .await;
 
     if result.is_err() && !preserve_staging {
-        let _ = tokio::fs::remove_file(&staging).await;
+        let _ = remove_local_file_retry(&staging).await;
     }
     result?;
-    if modified != 0
+    if !modified_applied_to_staging
+        && modified != 0
         && let Err(error) = set_local_modified(destination.to_owned(), modified).await
     {
         log::warn!("无法恢复本地文件时间戳（{}）: {error}", destination.display());
@@ -476,5 +576,18 @@ mod tests {
             local_sibling_path(Path::new("C:/data/report.txt"), "nebula-backup", 42).unwrap(),
             Path::new("C:/data/.report.txt.nebula-backup-000000000000002a")
         );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn transient_windows_sharing_errors_retry_until_available() {
+        let mut attempts = 0usize;
+        let value = super::retry_local_fs_blocking(|| {
+            attempts += 1;
+            if attempts < 3 { Err(std::io::Error::from_raw_os_error(32)) } else { Ok("ok") }
+        })
+        .unwrap();
+        assert_eq!(value, "ok");
+        assert_eq!(attempts, 3);
     }
 }

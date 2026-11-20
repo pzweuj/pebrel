@@ -1705,6 +1705,7 @@
     "path_placeholder": "Paste a remote directory and press Enter",
     "path_invalid": "Enter a remote directory path",
     "follow_session": "Follow the session",
+    "open_in_tab": "Open in tab",
     "open_with_default": "Open with default app",
     "open_with_default_downloading": "Downloading {name} to open locally…",
     "open_with_default_failed": "Could not open {name} with the default app: {error}",

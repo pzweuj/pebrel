@@ -36,24 +36,21 @@ impl NebulaWorkspace {
         let menu = PopupMenu::build(window, cx, move |mut menu, _window, _cx| {
             menu = menu.external_link_icon(false);
             if single {
-                let open_ws = workspace.clone();
-                let open_entry = primary.clone();
-                menu = menu.item(
-                    PopupMenuItem::new(language.text(Message::CommonOpen))
-                        .icon(if primary.kind == SftpEntryKind::Directory {
-                            IconName::FolderOpen
-                        } else {
-                            IconName::File
-                        })
-                        .on_click(move |_, window, cx| {
-                            if let Some(workspace) = open_ws.upgrade() {
-                                workspace.update(cx, |this, cx| {
-                                    this.remote_activate(open_entry.clone(), true, window, cx);
-                                });
-                            }
-                        }),
-                );
-                if primary.kind != SftpEntryKind::Directory {
+                if primary.kind == SftpEntryKind::Directory {
+                    let open_ws = workspace.clone();
+                    let open_entry = primary.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(language.text(Message::CommonOpen))
+                            .icon(IconName::FolderOpen)
+                            .on_click(move |_, window, cx| {
+                                if let Some(workspace) = open_ws.upgrade() {
+                                    workspace.update(cx, |this, cx| {
+                                        this.remote_activate(open_entry.clone(), true, window, cx);
+                                    });
+                                }
+                            }),
+                    );
+                } else {
                     let ext_ws = workspace.clone();
                     let ext_entry = primary.clone();
                     menu = menu.item(
@@ -65,6 +62,25 @@ impl NebulaWorkspace {
                                     workspace.update(cx, |this, cx| {
                                         this.open_remote_file_with_default_app(
                                             ext_entry.clone(),
+                                            window,
+                                            cx,
+                                        );
+                                    });
+                                }
+                            }),
+                    );
+                    let tab_ws = workspace.clone();
+                    let tab_path = primary.path.clone();
+                    menu = menu.item(
+                        PopupMenuItem::new(language.text(Message::RemoteOpenInTab))
+                            .icon(IconName::File)
+                            .disabled(!ready)
+                            .on_click(move |_, window, cx| {
+                                if let Some(workspace) = tab_ws.upgrade() {
+                                    workspace.update(cx, |this, cx| {
+                                        this.open_remote_document(
+                                            this.remote_browser.destination.clone(),
+                                            tab_path.clone(),
                                             window,
                                             cx,
                                         );

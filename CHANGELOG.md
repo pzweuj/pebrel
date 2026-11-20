@@ -4,6 +4,34 @@ Every release entry is provided in English and Simplified Chinese.
 
 每个版本条目均同时提供英文和简体中文说明。
 
+## 2.6.2 - 2026-11-20
+
+### English
+
+#### Fixed
+
+- Prevent Windows sharing violations (`os error 32`) during SFTP downloads and external file opening by writing segmented downloads through a single synchronously closed local file handle and retrying transient antivirus/indexer locks on file publication and reads.
+- Prevent SFTP download transfer failures on handle-limited or session-constrained SSH servers by avoiding a redundant refresh SFTP channel before transfers, refreshing remote file metadata before download, and automatically falling back to single-handle sequential downloads when the server rejects multiple concurrent handles.
+
+#### Improved
+
+- Opening a remote file in the SFTP drawer (via double-click, Enter, or the context menu) now downloads a local temporary copy and launches it in the system default application (using `ShellExecuteW` on Windows), watches for saved edits, and prompts to push the updated copy back to the same remote path; opening in an in-app tab remains available in the right-click menu.
+
+### 中文
+
+#### 修复
+
+- 修复 Windows 下 SFTP 下载与外部打开文件报「另一个程序正在使用此文件」（`os error 32`）的问题：分段下载改为单一本地文件句柄并在返回前同步关闭，同时为文件发布重命名、时间戳写入与读取加入瞬态共享锁退避重试。
+- 修复部分服务器下 SFTP 下载传输失败的问题：移除传输前多余的 SFTP 刷新通道、下载前实时校准远端文件大小，并在服务端拒绝多句柄并发打开时自动降级为单句柄顺序下载。
+
+#### 改进
+
+- 统一 SFTP 文件打开体验：双击文件、按回车或右键打开时先将文件副本下载到本地临时目录并调用系统默认应用打开（Windows 端改用原生 `ShellExecuteW`），监听保存变化后弹窗询问是否按原名称推送回服务器；右键菜单同步保留「在标签页中打开」。
+
+### Contributors
+
+Local build from the current working tree. / 基于当前工作区构建。
+
 ## 2.6.1 - 2026-11-20
 
 ### English

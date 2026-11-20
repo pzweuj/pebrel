@@ -1,7 +1,7 @@
 //! Open remote files in the OS default application, watch the managed local temp
 //! copy for saves, and prompt (or auto-upload) to sync changes back to the server.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{Duration, SystemTime};
 
@@ -78,6 +78,7 @@ impl Drop for ExternalEditSession {
 pub(super) struct ExternalEditManager {
     next_id: u64,
     sessions: HashMap<u64, ExternalEditSession>,
+    in_flight: HashSet<(String, String)>,
 }
 
 impl ExternalEditManager {
@@ -153,6 +154,11 @@ impl NebulaWorkspace {
             return;
         }
 
+        let inflight_key = (destination.clone(), entry.path.clone());
+        if !self.remote_browser.external_edits.in_flight.insert(inflight_key.clone()) {
+            return;
+        }
+
         let edit_id = self.remote_browser.external_edits.allocate_id();
         let temp_dir = self.remote_browser.external_edits.temp_dir_for(edit_id);
         let remote_path = entry.path.clone();
@@ -176,6 +182,7 @@ impl NebulaWorkspace {
             .await;
 
             let _ = this.update_in(cx, |workspace, window, cx| {
+                workspace.remote_browser.external_edits.in_flight.remove(&inflight_key);
                 let language = crate::gpui_shell::config::ui_language(cx);
                 let file = match downloaded {
                     Some(Ok(file)) => file,
