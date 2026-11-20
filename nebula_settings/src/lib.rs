@@ -870,13 +870,13 @@ impl VcsDisplayName {
 }
 
 /// 终端 BEL（`^G`）的通知方式：关 / 闪烁 / 声音 / 两者。
-/// 缺省 `Both`：旧壳给 AI CLI 回合结束的可听提示默认是开的。
+/// 缺省 `Audible`：保留可听提示，避免 Tab 无补全候选等常见 BEL 触发整屏闪烁。
 #[derive(Copy, Clone, Debug, PartialEq, Eq, Default)]
 pub enum BellModeName {
     None,
     Visual,
-    Audible,
     #[default]
+    Audible,
     Both,
 }
 

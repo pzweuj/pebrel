@@ -572,8 +572,17 @@ impl NebulaWorkspace {
 
         let menu_workspace = cx.entity().downgrade();
         let left_drawer_instant = super::tab_reveal_instant(cx);
+        let header_in_title_bar = self.details_header_in_title_bar(window, cx);
         let left_drawer_spacer = left_drawer.map(|(drawer_width, open)| {
-            let spacer = div().h_full().flex_shrink_0();
+            let mut spacer = div().h_full().flex_shrink_0();
+            if header_in_title_bar {
+                spacer = spacer.overflow_hidden().child(self.render_details_header(
+                    drawer_width,
+                    true,
+                    window,
+                    cx,
+                ));
+            }
             if left_drawer_instant {
                 spacer
                     .w(px(left_drawer_extra_offset(drawer_width, base_left_inset)))
@@ -604,6 +613,7 @@ impl NebulaWorkspace {
                     .h_full()
                     .flex_shrink(1.0)
                     .min_w_0()
+                    .when(header_in_title_bar, |tabs| tabs.pl(px(TOP_TAB_LEFT_INSET)))
                     .items_end()
                     // 溢出翻页：只在装不下时出现。滚轮已经能滚，但滚轮是个
                     // 看不见的入口——tab 一多，用户根本不知道右边还有东西。

@@ -134,6 +134,14 @@ impl NebulaWorkspace {
         if !self.side_panel.open || self.reader_focus_active(cx) {
             self.details_panel.resize = None;
         }
+        if self.side_panel.open || self.side_panel_anim_armed {
+            let active = self.details_tab(cx);
+            if self.details_panel.tab != Some(active) {
+                self.details_panel.previous_tab = self.details_panel.tab;
+                self.details_panel.tab = Some(active);
+                self.details_panel.transition = self.details_panel.transition.wrapping_add(1);
+            }
+        }
     }
 
     pub(super) fn files_panel_on_left(&self, cx: &App) -> bool {
@@ -167,6 +175,15 @@ impl NebulaWorkspace {
             return None;
         }
         Some((self.details_panel_display_width(window), open))
+    }
+
+    /// 顶部标签且展开栏停靠左侧（无 macOS 原生交通灯）时，把抽屉顶栏直接嵌入
+    /// 标题栏左侧让位区，避免展开栏上方出现 48px 空白标题带叠加 48px 抽屉顶栏。
+    pub(super) fn details_header_in_title_bar(&self, window: &Window, cx: &App) -> bool {
+        self.tabs_position == nebula_settings::TabsPositionName::Top
+            && !self.settings_open
+            && crate::platform::window_chrome::layout(window).is_none()
+            && self.left_details_panel_layout(window, cx).is_some()
     }
 
     fn left_sidebar_occupied_width(&self) -> f32 {
@@ -250,9 +267,10 @@ impl NebulaWorkspace {
         }
     }
 
-    fn render_details_header(
+    pub(super) fn render_details_header(
         &self,
         width: f32,
+        in_title_bar: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
@@ -290,14 +308,10 @@ impl NebulaWorkspace {
         let background = cx.theme().secondary;
         let files_on_left = self.files_panel_on_left(cx);
         let swap_tip = language.text(Message::SettingsFilesDrawerSide);
-        let mut header = h_flex()
-            .id("workspace-details-header")
-            .debug_selector(|| "workspace-details-header".to_owned())
-            .h(px(48.0))
-            .w_full()
-            .flex_shrink_0()
-            .px(px(8.0))
-            .gap(px(2.0));
+        let mut tab_group = h_flex().gap(px(2.0)).items_center();
+        if in_title_bar {
+            tab_group = tab_group.occlude();
+        }
         for (index, id, label, icon) in tabs {
             let measured = window.text_system().shape_line(
                 label.into(),
@@ -375,20 +389,31 @@ impl NebulaWorkspace {
                             .bg(background.opacity(progress))
                     },
                 );
-            header = header.child(button);
+            tab_group = tab_group.child(button);
         }
-        header
-            .child(div().flex_1())
-            .child(
-                toolbar_button(
-                    "files-panel-side",
-                    if files_on_left { IconName::PanelRight } else { IconName::PanelLeft },
-                    false,
-                )
-                .debug_selector(|| "files-panel-side".to_owned())
-                .tooltip(swap_tip)
-                .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel_side(cx))),
+        let swap_button = div().flex_shrink_0().when(in_title_bar, |slot| slot.occlude()).child(
+            toolbar_button(
+                "files-panel-side",
+                if files_on_left { IconName::PanelRight } else { IconName::PanelLeft },
+                false,
             )
+            .debug_selector(|| "files-panel-side".to_owned())
+            .tooltip(swap_tip)
+            .on_click(cx.listener(|this, _, _, cx| this.toggle_files_panel_side(cx))),
+        );
+        h_flex()
+            .id("workspace-details-header")
+            .debug_selector(|| "workspace-details-header".to_owned())
+            .when(in_title_bar, |header| header.h_full())
+            .when(!in_title_bar, |header| header.h(px(40.0)))
+            .w_full()
+            .flex_shrink_0()
+            .px(px(8.0))
+            .gap(px(2.0))
+            .items_center()
+            .child(tab_group)
+            .child(div().flex_1())
+            .child(swap_button)
             .into_any_element()
     }
 
@@ -427,6 +452,7 @@ impl NebulaWorkspace {
                 PanelView::Git => self.render_git_tree(window, cx),
             }
         };
+        let header_in_title_bar = self.details_header_in_title_bar(window, cx);
         let band = v_flex()
             .relative()
             .w(px(width))
@@ -436,7 +462,9 @@ impl NebulaWorkspace {
             } else {
                 crate::gpui_shell::theme::PaneCardStyle::current(cx).margin.bottom
             }))
-            .child(self.render_details_header(width, window, cx))
+            .when(!header_in_title_bar, |band| {
+                band.child(self.render_details_header(width, false, window, cx))
+            })
             .child(div().flex_1().min_h_0().w_full().child(panel).with_animation(
                 ("details-content", self.details_panel.transition),
                 Animation::new(Duration::from_millis(140)).with_easing(ease_out_quint()),

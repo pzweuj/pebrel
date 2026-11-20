@@ -524,6 +524,15 @@ fn top_tabs_shift_right_of_left_files_panel_and_resize_handle(cx: &mut TestAppCo
     let left_slot = cx.debug_bounds("workspace-details-slot").unwrap();
     let left_handle = cx.debug_bounds("workspace-details-resize").unwrap();
     let shifted_tab = cx.debug_bounds("top-tab-0").unwrap();
+    let header = cx.debug_bounds("workspace-details-header").unwrap();
+    if cx.update(|window, _| crate::platform::window_chrome::layout(window).is_none()) {
+        assert!(
+            header.bottom() <= left_slot.top() + px(1.0),
+            "left drawer header {:?} should sit inside the title bar above slot {:?}",
+            header,
+            left_slot
+        );
+    }
     assert!(
         shifted_tab.left() >= left_slot.right(),
         "top tab {:?} overlapped left drawer {:?}",

@@ -20,7 +20,9 @@
 //! 就会出现"点进 c 目录，界面却显示 b 目录的内容"。世代号对不上的响应直接
 //! 丢弃——它描述的是一个已经不存在的意图。
 
+mod context_menu;
 mod drag;
+mod external_edit;
 #[cfg(all(test, feature = "gpui-test-support"))]
 mod follow_tests;
 mod interaction;
@@ -128,6 +130,8 @@ pub(super) struct RemoteBrowser {
     copy_feedback_sub: Option<Subscription>,
     /// 远端复制载荷必须带稳定的源 destination，不能从当前标题反推源主机。
     clipboard: Option<RemoteClipboard>,
+    /// 使用系统默认应用打开并监听修改回传的受管临时副本。
+    external_edits: external_edit::ExternalEditManager,
 }
 
 #[derive(Clone)]
@@ -799,6 +803,7 @@ impl NebulaWorkspace {
             .occlude();
         let list = div()
             .id("remote-files-list")
+            .debug_selector(|| "remote-files-list".to_owned())
             .key_context(KEY_CONTEXT)
             .track_focus(&focus)
             .flex_1()
@@ -826,6 +831,13 @@ impl NebulaWorkspace {
                         focus.focus(window, cx);
                     }
                     cx.notify();
+                }),
+            )
+            .on_mouse_down(
+                gpui::MouseButton::Right,
+                cx.listener(|this, event: &gpui::MouseDownEvent, window, cx| {
+                    cx.stop_propagation();
+                    this.open_remote_empty_context_menu(event.position, window, cx);
                 }),
             )
             .child(
@@ -862,7 +874,7 @@ impl NebulaWorkspace {
                     .id("remote-files-location")
                     .h(px(32.0))
                     .mx(px(TEXT_INSET))
-                    .mt(px(8.0))
+                    .mt(px(2.0))
                     .pl(px(8.0))
                     .pr(px(2.0))
                     .gap(px(4.0))
@@ -930,8 +942,8 @@ impl NebulaWorkspace {
             .child(
                 h_flex()
                     .px(px(TEXT_INSET))
-                    .pt(px(8.0))
-                    .pb(px(4.0))
+                    .pt(px(4.0))
+                    .pb(px(2.0))
                     .gap(px(2.0))
                     .flex_shrink_0()
                     .child(upload)
@@ -976,7 +988,7 @@ impl NebulaWorkspace {
             .child(
                 h_flex()
                     .px(px(TEXT_INSET))
-                    .pb(px(6.0))
+                    .pb(px(4.0))
                     .gap(px(12.0))
                     .flex_shrink_0()
                     .child(
@@ -1218,6 +1230,7 @@ impl NebulaWorkspace {
         };
         let activate = row.clone();
         let press = row.clone();
+        let context_row = row.clone();
         let download = row.clone();
         let copy = row.clone();
         let busy = self.remote_transfer_working() || self.remote_browser.preflighting;
@@ -1231,8 +1244,10 @@ impl NebulaWorkspace {
         let highlight = theme.accent.opacity(0.18);
         let language = crate::gpui_shell::config::ui_language(cx);
 
+        let debug_row_id = format!("remote-row-{}", row.name);
         let item = h_flex()
             .id(group.clone())
+            .debug_selector(move || debug_row_id.clone())
             .group(group.clone())
             .relative()
             .h(px(28.0))
@@ -1369,6 +1384,18 @@ impl NebulaWorkspace {
                         gpui::MouseButton::Left,
                         cx.listener(move |this, event, window, cx| {
                             this.remote_row_press(&press, event, window, cx);
+                        }),
+                    )
+                    .on_mouse_down(
+                        gpui::MouseButton::Right,
+                        cx.listener(move |this, event: &gpui::MouseDownEvent, window, cx| {
+                            cx.stop_propagation();
+                            this.open_remote_row_context_menu(
+                                context_row.clone(),
+                                event,
+                                window,
+                                cx,
+                            );
                         }),
                     )
                     .on_click(cx.listener(move |this, event: &gpui::ClickEvent, window, cx| {

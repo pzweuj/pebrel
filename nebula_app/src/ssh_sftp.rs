@@ -2,6 +2,8 @@
 pub(crate) mod document;
 #[path = "ssh_sftp/export.rs"]
 pub(crate) mod export;
+#[path = "ssh_sftp/external_edit.rs"]
+pub(crate) mod external_edit;
 #[path = "ssh_sftp/intake.rs"]
 pub(crate) mod intake;
 #[path = "ssh_sftp/limits.rs"]
@@ -373,12 +375,23 @@ impl SftpController {
     }
 
     pub fn delete(&self, entry: SftpEntry) {
+        self.delete_entries(vec![entry]);
+    }
+
+    pub fn delete_entries(&self, entries: Vec<SftpEntry>) {
+        if entries.is_empty() {
+            return;
+        }
         let snapshot = self.snapshot();
         let destination = snapshot.destination;
         let path = snapshot.path;
-        self.start_job(SftpPhase::Working, None, move |context| async move {
+        let progress = TransferProgress::new(entries_label(&entries), 0);
+        self.start_job(SftpPhase::Working, Some(progress), move |context| async move {
             let sftp = crate::ssh_session::open_sftp(&destination).await?;
-            delete_remote_entry(&sftp, entry, &context).await?;
+            for entry in entries {
+                context.check_cancelled()?;
+                delete_remote_entry(&sftp, entry, &context).await?;
+            }
             let entries = read_remote_dir(&sftp, &path).await?;
             Ok((path, entries))
         });

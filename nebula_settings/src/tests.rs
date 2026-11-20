@@ -263,7 +263,7 @@ fn defaults_when_file_content_is_absent_or_junk() {
     assert_eq!(settings.sidebar_width, DEFAULT_SIDEBAR_WIDTH);
     assert_eq!(settings.ssh_proxy_mode, ProxyModeName::Off);
     assert_eq!(settings.quick_terminal_hotkey, DEFAULT_QUICK_TERMINAL_HOTKEY);
-    assert_eq!(settings.bell, BellModeName::Both);
+    assert_eq!(settings.bell, BellModeName::Audible);
 }
 
 #[test]
@@ -322,7 +322,7 @@ fn ai_toasts_default_on_and_accept_all_boolean_spellings() {
         let raw = RawSettings::from_text(&format!("ai_toasts={value}\n"));
         let settings = RuntimeSettings::from_raw(&raw);
         assert!(!settings.ai_toasts, "{value:?}");
-        assert_eq!(settings.bell, BellModeName::Both);
+        assert_eq!(settings.bell, BellModeName::Audible);
         assert!(!settings.auto_check_updates);
         assert!(settings.resume_ai);
     }
@@ -353,7 +353,7 @@ fn ctrl_wheel_font_zoom_defaults_on_and_accepts_all_boolean_spellings() {
         let raw = RawSettings::from_text(&format!("ctrl_wheel_font_zoom={value}\n"));
         let settings = RuntimeSettings::from_raw(&raw);
         assert!(!settings.ctrl_wheel_font_zoom, "{value:?}");
-        assert_eq!(settings.bell, BellModeName::Both);
+        assert_eq!(settings.bell, BellModeName::Audible);
         assert!(settings.font_size_px.is_none());
     }
 }
@@ -368,7 +368,7 @@ fn bell_mode_parses_known_values_and_rejects_junk() {
     assert_eq!(BellModeName::from_settings("loud"), None);
     assert_eq!(
         RuntimeSettings::from_raw(&RawSettings::from_text("bell=loud\n")).bell,
-        BellModeName::Both
+        BellModeName::Audible
     );
 }
 

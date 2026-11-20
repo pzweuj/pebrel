@@ -171,6 +171,7 @@ impl NebulaWorkspace {
         let title_bar_height = effective_title_bar_height(self.density, native_layout);
         let align_with_native_controls =
             native_layout.is_some_and(|layout| layout.native_controls_visible);
+        let header_in_title_bar = self.details_header_in_title_bar(window, cx);
         let top_tabs_base_left_inset =
             native_layout.map_or(top_tabs::TOP_TAB_LEFT_INSET, |layout| layout.left_inset);
         let bar = TitleBar::new()
@@ -197,7 +198,7 @@ impl NebulaWorkspace {
                 bar.border_b_1().border_color(crate::gpui_shell::theme::settings_hairline(cx))
             })
             .when(top_tabs && native_layout.is_none(), |bar| {
-                bar.pl(px(top_tabs::TOP_TAB_LEFT_INSET))
+                bar.pl(px(if header_in_title_bar { 0.0 } else { top_tabs::TOP_TAB_LEFT_INSET }))
             })
             .when(top_tabs, |bar| {
                 bar.child(self.render_top_title_bar(

@@ -714,3 +714,55 @@ fn drop_upload_paths_uses_target_directory_and_rejects_when_unready(cx: &mut Tes
         fixture.stores[0].lock().unwrap().requested.contains(&"/srv/sub".to_owned())
     });
 }
+
+#[gpui::test]
+fn right_click_on_remote_row_and_empty_space_opens_context_menus(cx: &mut TestAppContext) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.entries = vec![SftpEntry {
+            name: "app.conf".to_owned(),
+            path: "/srv/Alpha 中/app.conf".to_owned(),
+            kind: SftpEntryKind::File,
+            size: 128,
+            modified: 1_700_000_000,
+            permissions: "-rw-r--r--".to_owned(),
+            is_parent: false,
+        }];
+        cx.notify();
+    });
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Right-clicking a file row selects it and hosts a context menu on the workspace root.
+    let row = fixture.window.debug_bounds("remote-row-app.conf").unwrap();
+    fixture.window.simulate_mouse_down(
+        row.center(),
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    fixture.workspace.read_with(&fixture.window, |workspace, _| {
+        assert!(workspace.remote_browser.selection.contains("/srv/Alpha 中/app.conf"));
+        assert!(workspace.file_tree_menu.is_some());
+    });
+
+    // Dismiss and right-click empty space in the list: still opens the directory context menu.
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.file_tree_menu = None;
+        cx.notify();
+    });
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    let list = fixture.window.debug_bounds("remote-files-list").unwrap();
+    let empty_point = gpui::point(list.center().x, list.bottom() - px(12.0));
+    fixture.window.simulate_mouse_down(
+        empty_point,
+        gpui::MouseButton::Right,
+        gpui::Modifiers::default(),
+    );
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    fixture.workspace.read_with(&fixture.window, |workspace, _| {
+        assert!(workspace.file_tree_menu.is_some());
+    });
+}

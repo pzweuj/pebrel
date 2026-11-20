@@ -1093,8 +1093,10 @@ impl TerminalView {
         if mode == nebula_settings::BellModeName::None {
             return;
         }
-        let audible_ok = if mode.audible() { Self::ring_audible() } else { false };
-        if mode.visual() || (mode.audible() && !audible_ok) {
+        if mode.audible() {
+            let _ = Self::ring_audible();
+        }
+        if mode.visual() {
             self.flash_bell(cx);
         }
         cx.emit(TerminalViewEvent::Notification(crate::notify::Notification::Bell {

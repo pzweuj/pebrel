@@ -805,6 +805,23 @@ impl NebulaWorkspace {
         })
     }
 
+    pub(super) fn show_file_tree_context_menu(
+        &mut self,
+        menu: Entity<PopupMenu>,
+        position: Point<Pixels>,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        menu.focus_handle(cx).focus(window, cx);
+        let subscription = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
+            this.file_tree_menu = None;
+            cx.notify();
+        });
+        self.file_tree_menu =
+            Some(FileTreeContextMenu { menu, position, _subscription: subscription });
+        cx.notify();
+    }
+
     fn open_file_tree_context_menu(
         &mut self,
         path: PathBuf,
@@ -833,14 +850,7 @@ impl NebulaWorkspace {
                 language,
             )
         });
-        menu.focus_handle(cx).focus(window, cx);
-        let subscription = cx.subscribe_in(&menu, window, |this, _, _: &DismissEvent, _, cx| {
-            this.file_tree_menu = None;
-            cx.notify();
-        });
-        self.file_tree_menu =
-            Some(FileTreeContextMenu { menu, position, _subscription: subscription });
-        cx.notify();
+        self.show_file_tree_context_menu(menu, position, window, cx);
     }
 
     pub(super) fn render_file_tree_context_menu(&self) -> Option<gpui::AnyElement> {

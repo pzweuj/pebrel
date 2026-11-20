@@ -85,6 +85,15 @@ impl NebulaWorkspace {
                 }
             },
             "backspace" if !toggle && !modifiers.shift => self.remote_parent(cx),
+            "delete" if !toggle && !modifiers.shift => {
+                self.request_delete_remote_selection(window, cx);
+            },
+            "f2" if !toggle && !modifiers.shift => {
+                let selected = self.selected_remote_entries();
+                if selected.len() == 1 {
+                    self.request_rename_remote_entry(selected[0].clone(), window, cx);
+                }
+            },
             "f5" => self.remote_refresh(cx),
             _ => return,
         }
