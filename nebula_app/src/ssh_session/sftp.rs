@@ -1,7 +1,23 @@
 //! SFTP negotiation owns its channel even while the server has not accepted it.
+use std::fmt;
+
 use russh::{Channel, ChannelMsg, client};
 
 use super::{ClientSession, SessionError, lifecycle};
+
+/// Returned when the SSH server explicitly rejects the `"sftp"` subsystem
+/// request on an otherwise healthy connection. Callers must not evict or
+/// reconnect a pooled transport for a host that does not offer SFTP.
+#[derive(Debug)]
+pub(super) struct SubsystemRejected;
+
+impl fmt::Display for SubsystemRejected {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("SSH server rejected the SFTP subsystem")
+    }
+}
+
+impl std::error::Error for SubsystemRejected {}
 
 struct Opening(Option<Channel<client::Msg>>);
 
@@ -29,7 +45,7 @@ pub(super) async fn open(
             match channel.wait().await {
                 Some(ChannelMsg::Success) => return Ok::<_, SessionError>(()),
                 Some(ChannelMsg::Failure) => {
-                    return Err("SSH server rejected the SFTP subsystem".into());
+                    return Err(SubsystemRejected.into());
                 },
                 Some(ChannelMsg::Eof | ChannelMsg::Close) | None => {
                     return Err("SSH server closed the SFTP channel during negotiation".into());

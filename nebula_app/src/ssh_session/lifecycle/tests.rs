@@ -83,11 +83,13 @@ enum Mode {
     RejectSftp,
     HangSftp,
     AcceptSftp,
+    SaturateFirstConnectionSftp,
 }
 
 struct Loopback {
     mode: Mode,
     hang: bool,
+    reject_extra_channels: bool,
     data: mpsc::UnboundedSender<Vec<u8>>,
     window_changes: mpsc::UnboundedSender<WindowSize>,
     channels: Vec<Channel<server::Msg>>,
@@ -227,6 +229,7 @@ impl server::Handler for Loopback {
                 | Mode::RejectSftp
                 | Mode::HangSftp
                 | Mode::AcceptSftp
+                | Mode::SaturateFirstConnectionSftp
         ) {
             let _ = self.data.send(b"closed".to_vec());
         }
@@ -243,7 +246,7 @@ impl server::Handler for Loopback {
         let _ = self.data.send(b"sftp-request".to_vec());
         match self.mode {
             Mode::HangSftp => Ok(()),
-            Mode::AcceptSftp => {
+            Mode::AcceptSftp | Mode::SaturateFirstConnectionSftp => {
                 session.channel_success(channel)?;
                 let index = self.channels.iter().position(|c| c.id() == channel).unwrap();
                 let stream = self.channels.remove(index).into_stream();
@@ -262,6 +265,10 @@ impl server::Handler for Loopback {
     ) -> Result<(), Self::Error> {
         if self.hang {
             std::future::pending::<()>().await;
+        }
+        if self.reject_extra_channels && !self.channels.is_empty() {
+            reply.reject(russh::ChannelOpenFailure::AdministrativelyProhibited).await;
+            return Ok(());
         }
         reply.accept().await;
         if self.mode == Mode::BackpressuredEcho {
@@ -654,6 +661,7 @@ impl Fixture {
                 let handler = Loopback {
                     mode,
                     hang: first && mode == Mode::HangFirstConnection,
+                    reject_extra_channels: first && mode == Mode::SaturateFirstConnectionSftp,
                     data: data_tx.clone(),
                     window_changes: window_changes_tx.clone(),
                     channels: Vec::new(),

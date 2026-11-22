@@ -1,10 +1,12 @@
 //! Exercise transfer integrity and cancellation through the real SFTP codec.
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeSet, HashMap};
 use std::sync::Arc;
 use std::sync::atomic::AtomicU64;
 
-use russh_sftp::protocol::{Data, FileAttributes, Handle, Status, StatusCode};
+use russh_sftp::protocol::{
+    Data, ExtendedReply, FileAttributes, Handle, Packet, Status, StatusCode, Version,
+};
 
 use super::*;
 
@@ -29,12 +31,16 @@ struct Files {
     short_reads: bool,
     reject_writes: bool,
     max_open_handles: Option<usize>,
+    replacement_on_failure: Option<Vec<u8>>,
+    fail_once_read_at: Option<u64>,
     cancel_after_read: Option<Arc<Progress>>,
 }
 
 struct Peer {
     files: Arc<std::sync::Mutex<Files>>,
     handles: BTreeSet<String>,
+    replaced_file: Option<(BTreeSet<String>, Vec<u8>)>,
+    advertised_limit: Option<u64>,
 }
 
 fn success(id: u32) -> Status {
@@ -50,6 +56,28 @@ impl russh_sftp::server::Handler for Peer {
     type Error = StatusCode;
     fn unimplemented(&self) -> StatusCode {
         StatusCode::OpUnsupported
+    }
+
+    async fn init(&mut self, _: u32, _: HashMap<String, String>) -> Result<Version, StatusCode> {
+        let mut version = Version::new();
+        if self.advertised_limit.is_some() {
+            version.extensions.insert("limits@openssh.com".into(), "1".into());
+        }
+        Ok(version)
+    }
+
+    async fn extended(
+        &mut self,
+        id: u32,
+        request: String,
+        _: Vec<u8>,
+    ) -> Result<Packet, StatusCode> {
+        if request != "limits@openssh.com" {
+            return Err(StatusCode::OpUnsupported);
+        }
+        let limit = self.advertised_limit.ok_or(StatusCode::OpUnsupported)?;
+        let data = [0, 0, 0, limit].into_iter().flat_map(u64::to_be_bytes).collect();
+        Ok(ExtendedReply { id, data }.into())
     }
 
     async fn open(
@@ -88,13 +116,25 @@ impl russh_sftp::server::Handler for Peer {
         if let Some(progress) = files.cancel_after_read.take() {
             progress.cancelled.store(true, Ordering::SeqCst);
         }
+        if files.fail_once_read_at == Some(offset) {
+            files.fail_once_read_at = None;
+            if let Some(replacement) = files.replacement_on_failure.take() {
+                let original = std::mem::replace(&mut files.data, replacement);
+                self.replaced_file = Some((self.handles.clone(), original));
+            }
+            return Err(StatusCode::Failure);
+        }
         let offset = offset as usize;
-        if offset >= files.data.len() {
+        let data = match &self.replaced_file {
+            Some((original_handles, original)) if original_handles.contains(&handle) => original,
+            _ => &files.data,
+        };
+        if offset >= data.len() {
             return Err(StatusCode::Eof);
         }
         let length = if files.short_reads { (length as usize).min(1013) } else { length as usize };
-        let end = (offset + length).min(files.data.len());
-        Ok(Data { id, data: files.data[offset..end].to_vec() })
+        let end = (offset + length).min(data.len());
+        Ok(Data { id, data: data[offset..end].to_vec() })
     }
 
     async fn write(
@@ -128,11 +168,22 @@ impl russh_sftp::server::Handler for Peer {
 }
 
 async fn peer() -> (Arc<std::sync::Mutex<Files>>, SftpSession) {
+    peer_with_limit(None).await
+}
+
+async fn peer_with_limit(
+    advertised_limit: Option<u64>,
+) -> (Arc<std::sync::Mutex<Files>>, SftpSession) {
     let files = Arc::new(std::sync::Mutex::new(Files::default()));
     let (client, server) = tokio::io::duplex(128 * 1024);
     tokio::spawn(russh_sftp::server::run(
         server,
-        Peer { files: files.clone(), handles: BTreeSet::new() },
+        Peer {
+            files: files.clone(),
+            handles: BTreeSet::new(),
+            replaced_file: None,
+            advertised_limit,
+        },
     ));
     let session = SftpSession::new_with_config(client, crate::ssh_sftp::limits::session_config())
         .await
@@ -182,7 +233,7 @@ fn buffered_transfers_preserve_empty_short_and_segmented_files() {
 #[test]
 fn early_eof_never_reports_a_complete_download() {
     run(async {
-        let (files, session) = peer().await;
+        let (files, session) = peer_with_limit(Some(4)).await;
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("target");
         files.lock().unwrap().data = vec![42; TRANSFER_CHUNK + 17];
@@ -203,6 +254,7 @@ fn early_eof_never_reports_a_complete_download() {
                 io::ErrorKind::UnexpectedEof
             );
         }
+        assert_full_quota(&session, 4).await;
         session.close().await.unwrap();
     });
 }
@@ -210,7 +262,7 @@ fn early_eof_never_reports_a_complete_download() {
 #[test]
 fn cancellation_does_not_count_data_waiting_in_the_local_buffer() {
     run(async {
-        let (files, session) = peer().await;
+        let (files, session) = peer_with_limit(Some(4)).await;
         let directory = tempfile::tempdir().unwrap();
         let target = directory.path().join("target");
         let progress = Arc::new(Progress::default());
@@ -232,6 +284,7 @@ fn cancellation_does_not_count_data_waiting_in_the_local_buffer() {
         assert_eq!(error.downcast_ref::<io::Error>().unwrap().kind(), io::ErrorKind::Interrupted);
         assert_eq!(progress.bytes.load(Ordering::SeqCst), 0);
         assert_eq!(std::fs::metadata(&target).unwrap().len(), 0);
+        assert_full_quota(&session, 4).await;
         session.close().await.unwrap();
     });
 }
@@ -320,4 +373,80 @@ fn download_segmented_closes_local_handle_and_applies_mtime_before_returning() {
         assert_eq!(std::fs::read(&published).unwrap(), data);
         session.close().await.unwrap();
     });
+}
+
+#[test]
+fn segment_read_failure_recovers_sequentially_without_double_counting_progress() {
+    run(async {
+        let (files, session) = peer().await;
+        let directory = tempfile::tempdir().unwrap();
+        let target = directory.path().join("recovered.bin");
+        // Use a multi-batch segment size so the failing segment has already
+        // flushed at least one LOCAL_IO_BUFFER batch before failing mid-range.
+        let size = 4 * LOCAL_IO_BUFFER + 12_345;
+        let data: Vec<u8> = (0..size).map(|i| ((i * 41 + i / 97) % 251) as u8).collect();
+        let plan = plan_segments(size as u64, 4);
+        assert_eq!(plan.len(), 4);
+        let fail_offset = plan[1].0 + LOCAL_IO_BUFFER as u64;
+        {
+            let mut guard = files.lock().unwrap();
+            guard.data = data.clone();
+            guard.fail_once_read_at = Some(fail_offset);
+            guard.replacement_on_failure = Some(vec![0xff; size]);
+        }
+
+        let downloaded = Progress::default();
+        let outcome = download_segmented(&session, "remote", size as u64, &target, 4, &downloaded)
+            .await
+            .unwrap();
+        assert_eq!((outcome.written, outcome.contiguous), (size as u64, size as u64));
+        assert_eq!(downloaded.bytes.load(Ordering::SeqCst), size as u64);
+        assert_eq!(std::fs::read(&target).unwrap(), data);
+        assert!(files.lock().unwrap().replacement_on_failure.is_none());
+        session.close().await.unwrap();
+    });
+}
+
+#[test]
+fn repeated_downloads_close_remote_handles_cleanly() {
+    run(async {
+        let (files, session) = peer_with_limit(Some(4)).await;
+        let directory = tempfile::tempdir().unwrap();
+        let size = 4 * TRANSFER_CHUNK;
+        let data: Vec<u8> = (0..size).map(|i| ((i * 19 + 5) % 251) as u8).collect();
+        {
+            let mut guard = files.lock().unwrap();
+            guard.data = data.clone();
+            // Exactly fits one 4-segment download; leaked handles would force
+            // later downloads to fail or degrade.
+            guard.max_open_handles = Some(4);
+        }
+
+        for round in 0..3 {
+            let target = directory.path().join(format!("round-{round}.bin"));
+            let downloaded = Progress::default();
+            let outcome =
+                download_segmented(&session, "remote", size as u64, &target, 4, &downloaded)
+                    .await
+                    .unwrap();
+            assert_eq!((outcome.written, outcome.contiguous), (size as u64, size as u64));
+            assert_eq!(std::fs::read(&target).unwrap(), data);
+            assert_full_quota(&session, 4).await;
+        }
+        session.close().await.unwrap();
+    });
+}
+
+async fn assert_full_quota(session: &SftpSession, limit: usize) {
+    let mut handles = Vec::new();
+    for _ in 0..limit {
+        handles.push(session.open("remote").await.expect("handle quota should be restored"));
+    }
+    assert!(matches!(
+        session.open("remote").await,
+        Err(russh_sftp::client::error::Error::Limited(_))
+    ));
+    for mut handle in handles {
+        handle.shutdown().await.unwrap();
+    }
 }

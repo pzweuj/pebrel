@@ -42,7 +42,7 @@ type TransferError = Box<dyn std::error::Error + Send + Sync>;
 type TransferResult<T> = Result<T, TransferError>;
 
 // Batch local disk work independently of the interoperable SFTP packet size.
-// With the default 64 download workers this retains at most 16 MiB of payload.
+// With the default 16 download workers this retains at most 4 MiB of payload.
 const LOCAL_IO_BUFFER: usize = 256 * 1024;
 
 /// 传输过程中引擎需要向外汇报和向外询问的东西。
@@ -306,17 +306,7 @@ pub(crate) async fn download_segmented_with_times(
     let window = if total < MIN_SEGMENTED_DOWNLOAD { 1 } else { window.max(1) };
     let plan = plan_segments(total, window);
 
-    let outcome = if plan.len() <= 1 {
-        async {
-            let source = sftp.open(remote.to_owned()).await?;
-            let written =
-                download_range_with_handle(source, 0, total, &local_file, observer).await?;
-            Ok::<_, TransferError>(DownloadOutcome { written, contiguous: written })
-        }
-        .await
-    } else {
-        download_multi_segment(sftp, remote, total, &plan, &local_file, observer).await
-    };
+    let outcome = download_ranges(sftp, remote, total, &plan, &local_file, observer).await;
 
     // 无论成功、失败还是取消，都必须先显式释放唯一的本地文件句柄再返回，
     // 否则调用方随后的 rename 或 remove_file 在 Windows 上会撞上共享冲突。
@@ -325,7 +315,33 @@ pub(crate) async fn download_segmented_with_times(
     outcome
 }
 
-async fn download_multi_segment(
+enum SegmentFailure {
+    /// A remote SFTP read/seek failed (for example, per-request timeout under
+    /// concurrent burst pressure) and the remaining unwritten tail of this
+    /// segment can be retried sequentially on a single handle.
+    Retryable { written: u64, error: TransferError },
+    /// Cancellation, premature remote EOF, or local disk I/O failure.
+    Fatal(TransferError),
+}
+
+impl SegmentFailure {
+    fn into_error(self) -> TransferError {
+        match self {
+            Self::Retryable { error, .. } | Self::Fatal(error) => error,
+        }
+    }
+}
+
+async fn close_remote_handles(handles: Vec<SftpFile>) -> TransferResult<()> {
+    // Only acknowledged CLOSE requests return the negotiated client handle quota.
+    let closes = handles.into_iter().map(|mut handle| async move { handle.shutdown().await });
+    for result in join_all(closes.collect()).await {
+        result?;
+    }
+    Ok(())
+}
+
+async fn download_ranges(
     sftp: &SftpSession,
     remote: &str,
     total: u64,
@@ -347,65 +363,89 @@ async fn download_multi_segment(
         }
     }
 
-    if let Some(open_error) = first_open_error {
-        guard(observer)?;
-        if let Some(fallback_handle) = opened.into_iter().next() {
-            log::info!(
-                "远端 SFTP 拒绝并发打开 {} 个句柄（{open_error}），已降级为单句柄顺序下载",
-                plan.len()
-            );
-            let written =
-                download_range_with_handle(fallback_handle, 0, total, local_file, observer).await?;
-            return Ok(DownloadOutcome { written, contiguous: written });
+    let full_range = [(0, total)];
+    let ranges = if let Some(open_error) = first_open_error {
+        let Some(handle) = opened.pop() else {
+            guard(observer)?;
+            return Err(open_error.into());
+        };
+        log::info!("远端 SFTP 拒绝并发打开句柄（{open_error}），已降级为顺序下载");
+        let extras = std::mem::replace(&mut opened, vec![handle]);
+        if let Err(error) = close_remote_handles(extras).await {
+            close_remote_handles(opened).await?;
+            return Err(error);
         }
-        return Err(open_error.into());
-    }
+        &full_range[..]
+    } else {
+        plan
+    };
 
-    let tasks: Vec<_> = plan
-        .iter()
-        .zip(opened)
-        .map(|(&(offset, length), handle)| async move {
-            download_range_with_handle(handle, offset, length, local_file, observer).await
-        })
-        .collect();
-    let results = join_all(tasks).await;
+    let result = read_open_ranges(&mut opened, ranges, local_file, observer).await;
+    let closed = close_remote_handles(opened).await;
+    let outcome = result?;
+    closed?;
+    Ok(outcome)
+}
 
+async fn read_open_ranges(
+    handles: &mut [SftpFile],
+    ranges: &[(u64, u64)],
+    local_file: &Arc<std::fs::File>,
+    observer: &dyn TransferObserver,
+) -> TransferResult<DownloadOutcome> {
+    let tasks = ranges.iter().zip(handles.iter_mut()).map(|(&(offset, length), handle)| {
+        download_range_on_handle(handle, offset, length, local_file, observer)
+    });
+    let results = join_all(tasks.collect()).await;
     let mut segments = Vec::with_capacity(results.len());
-    let mut written = 0u64;
-    let mut failure = None;
-    for (&(offset, length), result) in plan.iter().zip(results) {
-        match result {
-            Ok(done) => {
-                written += done;
-                segments.push(SegmentProgress { offset, length, done });
+    let mut retries = Vec::new();
+    for (index, (&(offset, length), result)) in ranges.iter().zip(results).enumerate() {
+        let done = match result {
+            Ok(done) => done,
+            Err(SegmentFailure::Retryable { written, error }) if ranges.len() > 1 => {
+                log::warn!("远端 SFTP 分段读取失败（{error}），将顺序补传剩余数据");
+                retries.push(index);
+                written
             },
-            Err(error) => {
-                // 失败的段贡献 0 字节：它写了多少无从确认，按最保守的方式
-                // 记账，续传偏移就不会落在一段没写全的数据后面。
-                segments.push(SegmentProgress { offset, length, done: 0 });
-                failure = failure.or(Some(error));
-            },
-        }
+            Err(failure) => return Err(failure.into_error()),
+        };
+        segments.push(SegmentProgress { offset, length, done });
     }
 
-    let contiguous = contiguous_offset(&segments);
-    match failure {
-        Some(error) => Err(error),
-        None => Ok(DownloadOutcome { written, contiguous }),
+    // Reopening by pathname could select a different file after an atomic replacement.
+    for index in retries {
+        let segment = &mut segments[index];
+        segment.done += download_range_on_handle(
+            &mut handles[index],
+            segment.offset + segment.done,
+            segment.length - segment.done,
+            local_file,
+            observer,
+        )
+        .await
+        .map_err(SegmentFailure::into_error)?;
     }
+    Ok(DownloadOutcome {
+        written: segments.iter().map(|segment| segment.done).sum(),
+        contiguous: contiguous_offset(&segments),
+    })
 }
 
 /// 下载 `[offset, offset + length)` 这一段到本地唯一文件句柄的对应偏移处。
-async fn download_range_with_handle(
-    mut source: SftpFile,
+async fn download_range_on_handle(
+    source: &mut SftpFile,
     offset: u64,
     length: u64,
     local_file: &Arc<std::fs::File>,
     observer: &dyn TransferObserver,
-) -> TransferResult<u64> {
-    if offset > 0 {
-        source.seek(io::SeekFrom::Start(offset)).await?;
-    }
+) -> Result<u64, SegmentFailure> {
+    source.seek(io::SeekFrom::Start(offset)).await.map_err(|error| {
+        if observer.cancelled() {
+            SegmentFailure::Fatal(error.into())
+        } else {
+            SegmentFailure::Retryable { written: 0, error: error.into() }
+        }
+    })?;
 
     let capacity = usize::try_from(length).unwrap_or(LOCAL_IO_BUFFER).min(LOCAL_IO_BUFFER);
     let mut buffer = vec![0u8; capacity];
@@ -414,17 +454,25 @@ async fn download_range_with_handle(
     let mut remaining = length;
     let mut written = 0u64;
     while remaining > 0 {
-        guard(observer)?;
+        guard(observer).map_err(SegmentFailure::Fatal)?;
         // 只读到段边界为止：段末尾那次读必须缩短，否则会读进下一段的地盘，
         // 两个工作者写同一片区域。
         let want = usize::try_from(remaining).unwrap_or(TRANSFER_CHUNK).min(TRANSFER_CHUNK);
-        let count = source.read(&mut buffer[buffered..buffered + want]).await?;
+        let count = source.read(&mut buffer[buffered..buffered + want]).await.map_err(|error| {
+            if observer.cancelled() {
+                SegmentFailure::Fatal(error.into())
+            } else {
+                SegmentFailure::Retryable { written, error: error.into() }
+            }
+        })?;
         if count == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "remote file ended before the requested range",
-            )
-            .into());
+            return Err(SegmentFailure::Fatal(
+                io::Error::new(
+                    io::ErrorKind::UnexpectedEof,
+                    "remote file ended before the requested range",
+                )
+                .into(),
+            ));
         }
         buffered += count;
         remaining -= count as u64;
@@ -438,9 +486,11 @@ async fn download_range_with_handle(
                 (payload, res)
             })
             .await
-            .map_err(|error| io::Error::other(format!("本地落盘任务失败: {error}")))?;
+            .map_err(|error| {
+                SegmentFailure::Fatal(io::Error::other(format!("本地落盘任务失败: {error}")).into())
+            })?;
             buffer = returned;
-            write_result?;
+            write_result.map_err(|error| SegmentFailure::Fatal(error.into()))?;
             // Report only completed local writes, never data held in our buffer.
             observer.advance(chunk_len as u64);
             write_offset += chunk_len as u64;

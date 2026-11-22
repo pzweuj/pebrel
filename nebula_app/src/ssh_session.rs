@@ -1176,8 +1176,28 @@ pub(crate) async fn open_sftp(
     }
 
     // SFTP 面板自己有加载态，不参与终端 pane 的连接卡片。
-    let session = authenticated_session(&destination, &profile, None::<&NoopSshEventHost>).await?;
-    sftp_on_session(&session).await
+    let route = resolve_connection_route(&destination, &profile, 0, None).await?;
+    open_sftp_on_route(&route).await
+}
+
+async fn open_sftp_on_route(
+    route: &ResolvedRoute,
+) -> Result<russh_sftp::client::SftpSession, SessionError> {
+    let mut acquired = authenticated_route(route, None::<&NoopSshEventHost>, false, true).await?;
+    match sftp_on_session(&acquired.session).await {
+        Ok(sftp) => Ok(sftp),
+        Err(first_error) if acquired.reused && !first_error.is::<sftp::SubsystemRejected>() => {
+            // Reused pooled transport may be half-open (before keepalive expiry)
+            // or saturated at the server's MaxSessions channel cap. Evict only
+            // this pool entry so existing panes keep their Arc<ClientSession>,
+            // then open a fresh connection for SFTP.
+            evict_pooled_session(&acquired.key, &acquired.session).await;
+            info!("SSH pooled SFTP channel failed; reconnecting: {first_error}");
+            acquired = authenticated_route(route, None::<&NoopSshEventHost>, false, true).await?;
+            sftp_on_session(&acquired.session).await
+        },
+        Err(error) => Err(error),
+    }
 }
 
 async fn sftp_on_session(

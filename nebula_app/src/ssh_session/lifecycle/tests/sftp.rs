@@ -67,3 +67,45 @@ fn accepted_sftp_can_reopen_on_the_original_pane_transport() {
         fixture.forget(&acquired.session).await;
     });
 }
+
+#[test]
+fn saturated_pooled_session_reconnects_for_sftp_without_closing_existing_shell() {
+    check(async {
+        let fixture = Fixture::new(Mode::SaturateFirstConnectionSftp).await;
+        let first = fixture.connect().await;
+        assert!(!first.reused);
+        let mut shell = own_channel(first.session.channel_open_session().await.unwrap());
+
+        // The first pooled connection now rejects additional channels (MaxSessions).
+        // `open_sftp_on_route` must evict only the pool entry, reconnect, and open SFTP.
+        let sftp = super::super::super::open_sftp_on_route(&fixture.route).await.unwrap();
+        sftp.close().await.unwrap();
+
+        let second = fixture.connect().await;
+        assert!(second.reused, "fresh SFTP transport should now be pooled");
+        assert!(!Arc::ptr_eq(&first.session, &second.session));
+        assert!(!first.session.is_closed(), "existing shell session must remain alive");
+
+        shell.finish().await.unwrap();
+        fixture.forget(&second.session).await;
+    });
+}
+
+#[test]
+fn pooled_subsystem_rejection_does_not_evict_or_reconnect() {
+    check(async {
+        let mut fixture = Fixture::new(Mode::RejectSftp).await;
+        let first = fixture.connect().await;
+        assert!(!first.reused);
+
+        let error = super::super::super::open_sftp_on_route(&fixture.route).await.err().unwrap();
+        assert!(error.to_string().contains("rejected the SFTP subsystem"), "{error}");
+        assert_eq!(fixture.data.recv().await.unwrap(), b"sftp-request");
+        assert_eq!(fixture.data.recv().await.unwrap(), b"closed");
+
+        let after = fixture.connect().await;
+        assert!(after.reused);
+        assert!(Arc::ptr_eq(&first.session, &after.session));
+        fixture.forget(&first.session).await;
+    });
+}
