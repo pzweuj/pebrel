@@ -81,23 +81,23 @@ fn modified_setting_reset_works_away_from_hover(cx: &mut TestAppContext) {
     let _settings_guard = SettingsBytesGuard::capture();
     let (pane, mut window) = open_settings(cx);
     click("settings-nav-6", &mut window);
-    let default = SettingsPane::factory_defaults().copy_on_select;
+    let default = SettingsPane::factory_defaults().cjk_bold_regular;
     window.update(|window, cx| {
-        pane.update(cx, |pane, cx| pane.toggle("copy_on_select", !default, window, cx));
+        pane.update(cx, |pane, cx| pane.toggle("cjk_bold_regular", !default, window, cx));
     });
     window.simulate_mouse_move(gpui::point(px(2.0), px(2.0)), None, Modifiers::default());
     draw(&mut window);
     let selector = window.read(|cx| {
         let language = crate::gpui_shell::config::ui_language(cx);
-        format!("setting-reset-{}", language.pick("选中即复制", "Copy on select"))
+        format!("setting-reset-{}", language.pick("中日韩粗体提亮", "Brighten CJK bold"))
     });
     let reset = window
         .update(|window, _| window.debug_bounds_for_selector(&selector))
         .expect("modified setting has a reset button outside row hover");
     assert_eq!(reset.size, size(px(32.0), px(32.0)));
     click_point(gpui::point(reset.center().x, reset.top() + px(1.0)), &mut window);
-    assert_eq!(pane.read_with(&window, |pane, _| pane.runtime.copy_on_select), default);
-    assert_eq!(RuntimeSettings::load().copy_on_select, default);
+    assert_eq!(pane.read_with(&window, |pane, _| pane.runtime.cjk_bold_regular), default);
+    assert_eq!(RuntimeSettings::load().cjk_bold_regular, default);
     assert!(window.update(|window, _| window.debug_bounds_for_selector(&selector)).is_none());
 }
 

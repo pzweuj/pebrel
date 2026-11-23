@@ -7,8 +7,8 @@ use std::time::{Duration, Instant};
 
 use gpui::prelude::FluentBuilder as _;
 use gpui::{
-    App, Context, InteractiveElement as _, IntoElement, ParentElement, StatefulInteractiveElement,
-    Styled, div, px,
+    App, AppContext as _, ClipboardItem, Context, Entity, InteractiveElement as _, IntoElement,
+    ParentElement, StatefulInteractiveElement, Styled, Subscription, div, px,
 };
 
 use crate::gpui_shell::prelude::*;
@@ -110,9 +110,25 @@ pub(super) struct SessionStatus {
     probing: bool,
     probe_at: Option<Instant>,
     generation: u64,
+    copy_feedback: Option<Entity<crate::gpui_shell::copy_feedback::CopyFeedback>>,
+    copy_feedback_sub: Option<Subscription>,
 }
 
 impl SessionStatus {
+    fn ensure_copy_feedback<V: 'static>(&mut self, cx: &mut Context<V>) {
+        if self.copy_feedback.is_none() {
+            let feedback = cx.new(|_| crate::gpui_shell::copy_feedback::CopyFeedback::new());
+            self.copy_feedback_sub = Some(cx.observe(&feedback, |_, _, cx| cx.notify()));
+            self.copy_feedback = Some(feedback);
+        }
+    }
+
+    fn clear_copy_feedback(&mut self, cx: &mut App) {
+        if let Some(feedback) = &self.copy_feedback {
+            feedback.update(cx, |feedback, cx| feedback.clear(cx));
+        }
+    }
+
     fn stop_probe(&mut self) {
         self.probe = None;
         self.probing = false;
@@ -147,13 +163,20 @@ impl SessionStatus {
                 self.generation = self.generation.wrapping_add(1);
                 self.stop_probe();
                 self.clear_reading();
+                self.clear_copy_feedback(cx);
             }
             return;
         };
         let switched = self.pane != Some(pane) || self.destination != destination;
+        let next_path = path.filter(|path| !path.is_empty());
+        let path_changed = self.path != next_path;
         self.visible = true;
         self.pane = Some(pane);
-        self.path = path.filter(|path| !path.is_empty());
+        self.path = next_path;
+        self.ensure_copy_feedback(cx);
+        if switched || path_changed {
+            self.clear_copy_feedback(cx);
+        }
         if switched {
             self.destination = destination;
             let (user, host) = identity_from_destination(&self.destination);
@@ -287,7 +310,6 @@ impl SessionStatus {
             (true, false) => self.host.clone(),
             (true, true) => self.destination.clone(),
         };
-        let path = self.path.clone().unwrap_or_default();
         h_flex()
             .id("session-status")
             .debug_selector(|| "session-status".to_owned())
@@ -334,7 +356,7 @@ impl SessionStatus {
                     })
                     .child(format!("{label}: {}", if names.is_empty() { "—" } else { &names }))
             }))
-            .child(div().flex_1().min_w_0().truncate().text_color(muted).child(path))
+            .child(self.render_path(language, cx))
             .child(meter(
                 "session-status-cpu",
                 language.text(Message::SessionStatusCpu),
@@ -373,6 +395,67 @@ impl SessionStatus {
             .children(self.uptime.map(|seconds| {
                 div().flex_shrink_0().text_color(muted).child(format_uptime(seconds))
             }))
+            .into_any_element()
+    }
+
+    fn render_path(&self, language: crate::display::UiLanguage, cx: &App) -> gpui::AnyElement {
+        let Some(path) = self.path.as_ref().filter(|path| !path.is_empty()) else {
+            return div().flex_1().min_w_0().into_any_element();
+        };
+        let theme = cx.theme();
+        let copied =
+            self.copy_feedback.as_ref().is_some_and(|feedback| feedback.read(cx).is_copied());
+        let copy_feedback = self.copy_feedback.clone();
+        let path_for_copy = path.clone();
+        let tooltip = if copied {
+            language.text(Message::RemoteCopied).to_owned()
+        } else {
+            format!("{}\n{}", path, language.text(Message::RemoteCopyPath))
+        };
+        div()
+            .flex_1()
+            .min_w_0()
+            .flex()
+            .items_center()
+            .child(
+                h_flex()
+                    .id("session-status-path")
+                    .debug_selector(|| "session-status-path".to_owned())
+                    .max_w_full()
+                    .min_w_0()
+                    .h(px(22.0))
+                    .px(px(6.0))
+                    .gap(px(5.0))
+                    .rounded(px(4.0))
+                    .cursor_pointer()
+                    .text_color(if copied { theme.foreground } else { theme.muted_foreground })
+                    .hover(|el| el.bg(theme.list_hover).text_color(theme.foreground))
+                    .active(|el| el.bg(theme.tab_active))
+                    .tooltip(move |window, cx| Tooltip::new(tooltip.clone()).build(window, cx))
+                    .on_click(move |_, _, cx| {
+                        cx.stop_propagation();
+                        cx.write_to_clipboard(ClipboardItem::new_string(path_for_copy.clone()));
+                        if let Some(feedback) = &copy_feedback {
+                            feedback.update(cx, |feedback, cx| feedback.mark_copied(cx));
+                        }
+                    })
+                    .child(div().min_w_0().truncate().child(path.clone()))
+                    .child(if copied {
+                        h_flex()
+                            .flex_shrink_0()
+                            .gap(px(3.0))
+                            .text_color(theme.success)
+                            .child(Icon::new(IconName::Check).size(px(12.0)))
+                            .child(
+                                div()
+                                    .debug_selector(|| "session-status-path-copied".to_owned())
+                                    .child(language.text(Message::RemoteCopied)),
+                            )
+                            .into_any_element()
+                    } else {
+                        Icon::new(IconName::Copy).size(px(12.0)).flex_shrink_0().into_any_element()
+                    }),
+            )
             .into_any_element()
     }
 }
@@ -630,6 +713,60 @@ mod tests {
         cx.update(|window, cx| window.draw(cx).clear(cx));
         assert!(cx.debug_bounds("session-status-users-tooltip").is_some());
         assert_eq!(cx.debug_bounds("session-status-users").unwrap(), target);
+    }
+
+    #[cfg(feature = "gpui-test-support")]
+    #[gpui::test]
+    fn clicking_bottom_path_copies_it_and_shows_timed_feedback(cx: &mut gpui::TestAppContext) {
+        use crate::gpui_shell::copy_feedback::COPY_FEEDBACK_TTL;
+        use gpui::{AppContext as _, Modifiers, MouseButton, Render, Window};
+
+        struct Probe(SessionStatus);
+        impl Render for Probe {
+            fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+                div()
+                    .w(px(960.0))
+                    .h(px(240.0))
+                    .flex()
+                    .flex_col()
+                    .child(div().flex_1())
+                    .child(self.0.render(cx))
+            }
+        }
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::gpui_shell::init(cx, Default::default());
+            super::super::windowing::initialize(cx, crate::runtime_api::RuntimeHub::new());
+        });
+        let (_, cx) = cx.add_window_view(|window, cx| {
+            let probe = cx.new(|cx| {
+                let mut status = SessionStatus::default();
+                status.path = Some("/var/log/nginx".to_owned());
+                status.ensure_copy_feedback(cx);
+                Probe(status)
+            });
+            gpui_component::Root::new(probe, window, cx)
+        });
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let target = cx.debug_bounds("session-status-path").unwrap();
+        assert!(target.size.width > px(0.0) && target.size.height > px(0.0));
+        cx.simulate_mouse_down(target.center(), MouseButton::Left, Modifiers::default());
+        cx.simulate_mouse_up(target.center(), MouseButton::Left, Modifiers::default());
+        // Move mouse away to confirm feedback remains visible outside hover.
+        cx.simulate_mouse_move(gpui::point(px(4.0), px(4.0)), None, Modifiers::default());
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+
+        let copied = cx.update(|_, cx| cx.read_from_clipboard().and_then(|item| item.text()));
+        assert_eq!(copied.as_deref(), Some("/var/log/nginx"));
+        assert!(cx.debug_bounds("session-status-path-copied").is_some());
+
+        cx.executor().advance_clock(COPY_FEEDBACK_TTL);
+        cx.run_until_parked();
+        cx.update(|window, cx| window.draw(cx).clear(cx));
+        assert!(cx.debug_bounds("session-status-path-copied").is_none());
     }
 
     #[test]

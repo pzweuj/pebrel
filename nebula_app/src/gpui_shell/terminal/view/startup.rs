@@ -43,7 +43,6 @@ impl TerminalView {
             line_height_multiplier,
             palette,
             term_config,
-            copy_on_select,
             shell,
         ) = match cx.try_global::<Settings>() {
             Some(settings) => (
@@ -60,7 +59,6 @@ impl TerminalView {
                 settings.theme_line_height,
                 Arc::new(settings.palette.clone()),
                 settings.term_config(),
-                settings.copy_on_select,
                 // 设置选定的默认 shell（旧壳 default_shell_launch 同径：
                 // resolve 失败或 PTY 集成 id 落回引擎默认）。WSL id 在
                 // 这里换上 bash 集成注入，cwd/git 分支经 NEBULA| 标题回流。
@@ -79,8 +77,6 @@ impl TerminalView {
                 None,
                 Arc::new(Palette::default()),
                 nebula_terminal::term::Config::default(),
-                // 旧壳的出厂默认即开。
-                true,
                 None,
             ),
         };
@@ -403,7 +399,8 @@ impl TerminalView {
             hint_config: super::super::osc_links::hint_config(),
             link_hover: None,
             pending_link_open: false,
-            copy_on_select,
+            shift_copy_armed: false,
+            last_modifiers: gpui::Modifiers::default(),
             last_report_point: None,
             application_mouse: None,
             cursor_visible: true,

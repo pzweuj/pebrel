@@ -93,11 +93,32 @@ pub struct TransferProgress {
     pub label: String,
     pub transferred: u64,
     pub total: u64,
+    /// Number of files completed in the current transfer batch.
+    pub completed_files: usize,
+    /// Total number of files planned in the current transfer batch (`0` while preparing).
+    pub total_files: usize,
 }
 
 impl TransferProgress {
     pub fn new(label: impl Into<String>, total: u64) -> Self {
-        Self { label: label.into(), transferred: 0, total }
+        Self { label: label.into(), transferred: 0, total, completed_files: 0, total_files: 0 }
+    }
+
+    pub fn set_file_plan(&mut self, total_files: usize) {
+        self.total_files = total_files;
+        self.completed_files = 0;
+    }
+
+    pub fn complete_file(&mut self) {
+        self.completed_files = self.completed_files.saturating_add(1).min(self.total_files);
+    }
+
+    /// 1-based `(current, total)` file index while transferring a known batch.
+    pub fn current_file(&self) -> Option<(usize, usize)> {
+        if self.total_files == 0 {
+            return None;
+        }
+        Some((self.completed_files.saturating_add(1).min(self.total_files), self.total_files))
     }
 
     pub fn advance(&mut self, bytes: u64) {
@@ -105,7 +126,15 @@ impl TransferProgress {
     }
 
     pub fn fraction(&self) -> f32 {
-        if self.total == 0 { 1.0 } else { self.transferred as f32 / self.total as f32 }
+        if self.total == 0 {
+            if self.total_files > 0 {
+                self.completed_files as f32 / self.total_files as f32
+            } else {
+                1.0
+            }
+        } else {
+            self.transferred as f32 / self.total as f32
+        }
     }
 }
 
@@ -612,6 +641,38 @@ impl TaskContext {
         self.wake_throttled(true);
     }
 
+    fn set_plan(&self, total: u64, total_files: usize) {
+        if !self.is_current() {
+            return;
+        }
+        if let Some(progress) = lock(&self.state).progress.as_mut() {
+            progress.total = total;
+            progress.transferred = progress.transferred.min(total);
+            progress.set_file_plan(total_files);
+        }
+        self.wake_throttled(true);
+    }
+
+    fn set_file_plan(&self, total_files: usize) {
+        if !self.is_current() {
+            return;
+        }
+        if let Some(progress) = lock(&self.state).progress.as_mut() {
+            progress.set_file_plan(total_files);
+        }
+        self.wake_throttled(true);
+    }
+
+    fn complete_file(&self) {
+        if !self.is_current() {
+            return;
+        }
+        if let Some(progress) = lock(&self.state).progress.as_mut() {
+            progress.complete_file();
+        }
+        self.wake_throttled(false);
+    }
+
     fn set_label(&self, label: impl Into<String>) {
         if !self.is_current() {
             return;
@@ -952,7 +1013,7 @@ async fn upload_local_paths(
     let plan = tokio::task::spawn_blocking(move || build_upload_plan(roots))
         .await
         .map_err(|err| format!("扫描上传目录失败: {err}"))??;
-    context.set_total(plan.total);
+    context.set_plan(plan.total, plan.files.len());
 
     execute_upload_plan(sftp, plan, options, context).await
 }
@@ -989,7 +1050,9 @@ async fn execute_upload_plan(
             options.skip_unchanged,
             context,
         )
-        .await
+        .await?;
+        context.complete_file();
+        Ok(())
     })
     .await?;
     Ok(())
@@ -1328,7 +1391,7 @@ async fn download_remote_entries(
         resolved.push(entry);
     }
     let plan = build_download_plan(sftp, resolved, local_directory, context).await?;
-    context.set_total(plan.total);
+    context.set_plan(plan.total, plan.files.len());
     execute_download_plan(sftp, plan, options.skip_unchanged, context).await
 }
 
@@ -1367,7 +1430,9 @@ async fn execute_download_plan(
             skip_unchanged,
             context,
         )
-        .await
+        .await?;
+        context.complete_file();
+        Ok(())
     })
     .await?;
     Ok(())
@@ -1429,7 +1494,7 @@ async fn copy_remote_entries(
     let result = async {
         let download = build_download_plan(source, copied, staging_root.clone(), context).await?;
         let source_bytes = download.total;
-        context.set_total(source_bytes.saturating_mul(2));
+        context.set_plan(source_bytes.saturating_mul(2), download.files.len());
         execute_download_plan(source, download, false, context).await?;
 
         let roots = resolve_upload_roots(target, staged_entries, target_directory, options).await?;
@@ -1437,6 +1502,7 @@ async fn copy_remote_entries(
             .await
             .map_err(|error| format!("扫描跨主机复制 staging 失败: {error}"))??;
         context.set_total(source_bytes.saturating_add(upload.total));
+        context.set_file_plan(upload.files.len());
         execute_upload_plan(target, upload, options, context).await
     }
     .await;
@@ -1670,6 +1736,26 @@ mod tests {
         progress.advance(8);
 
         assert_eq!(progress.transferred, 10);
+        assert_eq!(progress.fraction(), 1.0);
+    }
+
+    #[test]
+    fn transfer_progress_tracks_current_file_index_and_zero_byte_batches() {
+        let mut progress = TransferProgress::new("file-1.txt", 0);
+        assert_eq!(progress.current_file(), None);
+        progress.set_file_plan(11);
+        assert_eq!(progress.current_file(), Some((1, 11)));
+        assert_eq!(progress.fraction(), 0.0);
+
+        progress.complete_file();
+        assert_eq!(progress.current_file(), Some((2, 11)));
+        assert!((progress.fraction() - 1.0 / 11.0).abs() < 1e-6);
+
+        for _ in 0..20 {
+            progress.complete_file();
+        }
+        assert_eq!(progress.completed_files, 11);
+        assert_eq!(progress.current_file(), Some((11, 11)));
         assert_eq!(progress.fraction(), 1.0);
     }
 

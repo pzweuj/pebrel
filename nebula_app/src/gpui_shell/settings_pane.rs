@@ -1371,20 +1371,6 @@ impl SettingsPane {
                         ),
                     )
                     .child(self.switch_row(
-                        "copy_on_select",
-                        language.pick("选中即复制", "Copy on select"),
-                        help("copy_on_select", language),
-                        self.runtime.copy_on_select,
-                        cx,
-                    ))
-                    .child(self.switch_row(
-                        "middle_click_paste",
-                        language.text(crate::i18n::Message::SettingsMiddleClickPaste),
-                        help("middle_click_paste", language),
-                        self.runtime.middle_click_paste,
-                        cx,
-                    ))
-                    .child(self.switch_row(
                         "multiline_paste_confirm",
                         language.pick("粘贴前确认", "Confirm pastes"),
                         help("multiline_paste_confirm", language),

@@ -93,7 +93,7 @@ impl SftpController {
                     let plan =
                         build_download_plan(&sftp, entries, directory.path().to_owned(), &context)
                             .await?;
-                    context.set_total(plan.total);
+                    context.set_plan(plan.total, plan.files.len());
                     let files = export_manifest(&plan, directory.path())?;
                     let (done, wait) = tokio::sync::oneshot::channel();
                     let prepared = Arc::new(PreparedExport {

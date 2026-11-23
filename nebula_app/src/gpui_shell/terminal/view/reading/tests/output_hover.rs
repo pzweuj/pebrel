@@ -7,7 +7,6 @@ use nebula_terminal::vte::ansi::{ClearMode, Handler as _};
 #[gpui::test]
 fn hover_control_consumes_middle_and_right_without_terminal_gestures(cx: &mut TestAppContext) {
     let (view, mut cx, receiver, _, commands) = fixture(cx);
-    view.update(&mut cx, |view, _| view.copy_on_select = true);
     cx.update(|_, cx| cx.write_to_clipboard(ClipboardItem::new_string("must-not-paste".into())));
     let bounds = hover(&view, &mut cx, &commands[0]);
     for button in [MouseButton::Middle, MouseButton::Right] {

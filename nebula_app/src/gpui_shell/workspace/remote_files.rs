@@ -631,18 +631,27 @@ impl NebulaWorkspace {
             .collect()
     }
 
+    pub(super) fn remote_parent_row(&self) -> Option<SftpEntry> {
+        if self.remote_browser.path == "/" || self.remote_browser.path.is_empty() {
+            return None;
+        }
+        Some(SftpEntry {
+            name: "..".to_owned(),
+            path: crate::ssh_sftp::normalize_remote_path(&self.remote_browser.path, ".."),
+            kind: SftpEntryKind::Directory,
+            size: 0,
+            modified: 0,
+            permissions: String::new(),
+            is_parent: true,
+        })
+    }
+
     fn remote_rows(&self) -> Vec<SftpEntry> {
-        let mut rows = Vec::with_capacity(self.remote_browser.entries.len() + 1);
-        if self.remote_browser.path != "/" {
-            rows.push(SftpEntry {
-                name: "..".to_owned(),
-                path: crate::ssh_sftp::normalize_remote_path(&self.remote_browser.path, ".."),
-                kind: SftpEntryKind::Directory,
-                size: 0,
-                modified: 0,
-                permissions: String::new(),
-                is_parent: true,
-            });
+        let parent = self.remote_parent_row();
+        let mut rows =
+            Vec::with_capacity(self.remote_browser.entries.len() + usize::from(parent.is_some()));
+        if let Some(parent) = parent {
+            rows.push(parent);
         }
         rows.extend(self.remote_browser.entries.iter().cloned());
         rows
@@ -702,7 +711,11 @@ impl NebulaWorkspace {
     }
 
     /// The list fills the drawer between the compact toolbar and the transfer dock.
-    pub(super) fn render_remote_files(&mut self, cx: &mut Context<'_, Self>) -> gpui::AnyElement {
+    pub(super) fn render_remote_files(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<'_, Self>,
+    ) -> gpui::AnyElement {
         let transfer_status = self.render_remote_transfer_status(cx);
         let focus = self
             .remote_browser
@@ -776,9 +789,12 @@ impl NebulaWorkspace {
             });
         let theme = cx.theme();
         let muted = theme.muted_foreground;
+        let border = theme.border;
         let drop_highlight = theme.accent.opacity(0.18);
         let location_background = theme.background.darken(0.035);
-        let rows = self.remote_rows();
+        let parent_row = self.remote_parent_row();
+        let entries = self.remote_browser.entries.clone();
+        let has_entries = !entries.is_empty();
         let path = if self.remote_browser.path.is_empty() {
             language.text(Message::RemoteLocating).to_owned()
         } else {
@@ -796,14 +812,13 @@ impl NebulaWorkspace {
             .min_w_0()
             .overflow_hidden()
             .occlude();
-        let list = div()
+        let list = v_flex()
             .id("remote-files-list")
             .debug_selector(|| "remote-files-list".to_owned())
             .key_context(KEY_CONTEXT)
             .track_focus(&focus)
             .flex_1()
             .min_h_0()
-            .relative()
             .overflow_hidden()
             .on_key_down(cx.listener(Self::remote_files_key_down));
         let list = self
@@ -835,32 +850,59 @@ impl NebulaWorkspace {
                     this.open_remote_empty_context_menu(event.position, window, cx);
                 }),
             )
-            .child(
-                uniform_list(
-                    "remote-files-rows",
-                    rows.len(),
-                    cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
-                        range
-                            .filter_map(|index| {
-                                let row = rows.get(index)?.clone();
-                                let joined = (
-                                    index.checked_sub(1).and_then(|i| rows.get(i)).is_some_and(
-                                        |row| this.remote_browser.selection.contains(&row.path),
-                                    ),
-                                    rows.get(index + 1).is_some_and(|row| {
-                                        this.remote_browser.selection.contains(&row.path)
-                                    }),
-                                );
-                                Some(this.render_remote_row(row, joined, window, cx))
-                            })
-                            .collect()
-                    }),
+            .when_some(parent_row, |list, parent| {
+                list.child(
+                    div()
+                        .id("remote-files-pinned-parent")
+                        .debug_selector(|| "remote-files-pinned-parent".to_owned())
+                        .w_full()
+                        .flex_shrink_0()
+                        .when(has_entries, |row| {
+                            row.border_b_1().border_color(border.opacity(0.45))
+                        })
+                        .child(self.render_remote_row(parent, (false, false), window, cx)),
                 )
-                .absolute()
-                .inset_0()
-                .size_full()
-                .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
-                .track_scroll(&self.remote_files_scroll),
+            })
+            .child(
+                div()
+                    .id("remote-files-scroll-area")
+                    .debug_selector(|| "remote-files-scroll-area".to_owned())
+                    .flex_1()
+                    .min_h_0()
+                    .relative()
+                    .overflow_hidden()
+                    .child(
+                        uniform_list(
+                            "remote-files-rows",
+                            entries.len(),
+                            cx.processor(move |this, range: std::ops::Range<usize>, window, cx| {
+                                range
+                                    .filter_map(|index| {
+                                        let row = entries.get(index)?.clone();
+                                        let joined = (
+                                            index
+                                                .checked_sub(1)
+                                                .and_then(|i| entries.get(i))
+                                                .is_some_and(|row| {
+                                                    this.remote_browser
+                                                        .selection
+                                                        .contains(&row.path)
+                                                }),
+                                            entries.get(index + 1).is_some_and(|row| {
+                                                this.remote_browser.selection.contains(&row.path)
+                                            }),
+                                        );
+                                        Some(this.render_remote_row(row, joined, window, cx))
+                                    })
+                                    .collect()
+                            }),
+                        )
+                        .absolute()
+                        .inset_0()
+                        .size_full()
+                        .with_sizing_behavior(gpui::ListSizingBehavior::Auto)
+                        .track_scroll(&self.remote_files_scroll),
+                    ),
             );
 
         self.attach_upload_drop(panel, drop_highlight, None, cx)
@@ -1066,7 +1108,7 @@ impl NebulaWorkspace {
                 language.text(Message::TransferFailed).to_owned()
             } else {
                 progress
-                    .map(|p| p.label.clone())
+                    .map(format_transfer_label)
                     .unwrap_or_else(|| language.text(Message::RemotePreparing).to_owned())
             }
         } else if let Some(notice) = self.remote_notice(language) {
@@ -1086,17 +1128,13 @@ impl NebulaWorkspace {
                 &[("count", &self.remote_browser.entries.len().to_string())],
             )
         };
-        let detail = snapshot.as_ref().and_then(|snapshot| snapshot.error.clone()).or_else(|| {
-            progress.map(|p| {
-                format!(
-                    "{} / {}",
-                    format_transfer_bytes(p.transferred),
-                    format_transfer_bytes(p.total)
-                )
-            })
-        });
+        let detail = snapshot
+            .as_ref()
+            .and_then(|snapshot| snapshot.error.clone())
+            .or_else(|| progress.map(format_transfer_detail));
         let percent = progress.map(|progress| progress.fraction() * 100.0).unwrap_or(0.0);
-        let loading = progress.is_none_or(|progress| progress.total == 0);
+        let loading =
+            progress.is_none_or(|progress| progress.total == 0 && progress.total_files == 0);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
         let has_error = self.remote_browser.error.is_some();
@@ -1729,6 +1767,30 @@ fn local_metadata_matches(metadata: &std::fs::Metadata, remote: &SftpEntry) -> b
             .ok()
             .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
             .is_some_and(|elapsed| elapsed.as_secs() == remote.modified)
+}
+
+fn format_transfer_label(progress: &crate::ssh_sftp::TransferProgress) -> String {
+    match progress.current_file() {
+        Some((current, total)) if !progress.label.is_empty() => {
+            format!("[{current}/{total}] {}", progress.label)
+        },
+        Some((current, total)) => format!("[{current}/{total}]"),
+        None => progress.label.clone(),
+    }
+}
+
+fn format_transfer_detail(progress: &crate::ssh_sftp::TransferProgress) -> String {
+    let bytes = format!(
+        "{} / {}",
+        format_transfer_bytes(progress.transferred),
+        format_transfer_bytes(progress.total),
+    );
+    if progress.total > 0 || progress.total_files > 0 {
+        let percent = (progress.fraction() * 100.0).round().clamp(0.0, 100.0) as u8;
+        format!("{bytes} · {percent}%")
+    } else {
+        bytes
+    }
 }
 
 fn format_transfer_bytes(bytes: u64) -> String {

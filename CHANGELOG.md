@@ -4,6 +4,36 @@ Every release entry is provided in English and Simplified Chinese.
 
 每个版本条目均同时提供英文和简体中文说明。
 
+## 2.6.4 - 2026-11-23
+
+### English
+
+#### Added
+
+- Click the current remote path in the bottom SSH session status bar to copy it to the clipboard with inline copied confirmation.
+- SFTP upload and download progress now shows the current file index and total file count (for example `[2/11] filename`) along with transferred bytes and completion percentage.
+
+#### Improved
+
+- Pin the `..` parent directory row at the top of the SFTP file list so it remains visible while scrolling through long directories.
+- Disable automatic copy-on-select in the terminal: tap `Shift` after selecting text to copy it, and right-click or middle-click with an active selection to copy and paste it at the same time (right-click and middle-click without a selection continue to paste).
+
+### 中文
+
+#### 新增
+
+- 底部 SSH 会话状态栏显示的当前路径支持点击一键复制，并就地显示已复制确认反馈。
+- SFTP 上传与下载进度新增当前文件序号与总文件数显示（例如 `[2/11] 文件名`），同时显示已传输字节与百分比。
+
+#### 改进
+
+- SFTP 文件列表中的 `..` 上级目录行固定在列表顶部，滚动长目录时不再随列表滚出视野。
+- 取消终端中的选中即复制：选中文本后单击 `Shift` 复制选区；选中后点击鼠标右键或中键将同时执行复制并粘贴（无选区时右键和中键继续执行粘贴）。
+
+### Contributors
+
+Local build from the current working tree. / 基于当前工作区构建。
+
 ## 2.6.3 - 2026-11-22
 
 ### English

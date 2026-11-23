@@ -766,3 +766,54 @@ fn right_click_on_remote_row_and_empty_space_opens_context_menus(cx: &mut TestAp
         assert!(workspace.file_tree_menu.is_some());
     });
 }
+
+#[gpui::test]
+fn parent_directory_row_stays_pinned_while_remote_list_scrolls(cx: &mut TestAppContext) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.entries = (0..60)
+            .map(|index| SftpEntry {
+                name: format!("file-{index:02}.txt"),
+                path: format!("/srv/Alpha 中/file-{index:02}.txt"),
+                kind: SftpEntryKind::File,
+                size: 64,
+                modified: 1_700_000_000,
+                permissions: "-rw-r--r--".to_owned(),
+                is_parent: false,
+            })
+            .collect();
+        cx.notify();
+    });
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    let parent_before = fixture.window.debug_bounds("remote-row-..").unwrap();
+    let scroll_area = fixture.window.debug_bounds("remote-files-scroll-area").unwrap();
+    assert!(
+        parent_before.bottom() <= scroll_area.top() + px(1.0),
+        "parent row must sit pinned above the scrollable list"
+    );
+
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_files_scroll.scroll_to_item(50, gpui::ScrollStrategy::Top);
+        cx.notify();
+    });
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    let parent_after = fixture.window.debug_bounds("remote-row-..").unwrap();
+    assert_eq!(parent_after, parent_before, "parent row must not move when the file list scrolls");
+    assert!(fixture.window.debug_bounds("remote-row-file-00.txt").is_none());
+    assert!(fixture.window.debug_bounds("remote-row-file-50.txt").is_some());
+}
+
+#[test]
+fn transfer_progress_formatting_includes_file_counter_and_percentage() {
+    let mut progress = crate::ssh_sftp::TransferProgress::new("archive.tar.gz", 1024);
+    assert_eq!(format_transfer_label(&progress), "archive.tar.gz");
+    progress.set_file_plan(11);
+    progress.complete_file();
+    progress.advance(512);
+    assert_eq!(format_transfer_label(&progress), "[2/11] archive.tar.gz");
+    assert_eq!(format_transfer_detail(&progress), "512 B / 1.0 KiB · 50%");
+}

@@ -486,6 +486,7 @@ impl TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.shift_copy_armed = false;
         self.shell_pointer.invalidate();
         self.cancel_pointer_gesture();
         window.focus(&self.focus_handle, cx);
@@ -736,8 +737,6 @@ impl TerminalView {
             && self.link_hover.as_ref().is_some_and(|hover| hover.hint.bounds().contains(&point));
         if open_link {
             self.try_open_hovered_link(window, cx);
-        } else if self.copy_on_select {
-            self.copy_selection(false, window, cx);
         }
         cx.notify();
     }
@@ -749,7 +748,7 @@ impl TerminalView {
     pub(super) fn on_mouse_up_out(
         &mut self,
         event: &MouseUpEvent,
-        window: &mut Window,
+        _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
         self.shell_pointer.invalidate();
@@ -772,10 +771,6 @@ impl TerminalView {
             return;
         }
         self.selecting = false;
-        // 指针不在终端上，链接打开不该发生；只补选中即复制这一条收尾。
-        if self.copy_on_select {
-            self.copy_selection(false, window, cx);
-        }
         cx.notify();
     }
 
@@ -877,13 +872,14 @@ impl TerminalView {
         true
     }
 
-    /// 选中复制只控制左键松手；右键始终按选区复制或粘贴，Ctrl 保留显式菜单入口。
+    /// 右键：有选区时复制并同时粘贴，无选区时直接粘贴；Ctrl 保留显式菜单入口。
     pub(super) fn on_right_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.shift_copy_armed = false;
         window.focus(&self.focus_handle, cx);
         cx.emit(TerminalViewEvent::FocusRequested);
         if suggest::popup_dismiss(&mut self.suggest) {
@@ -913,8 +909,8 @@ impl TerminalView {
                 position: event.position,
                 text: selected_text.unwrap_or_default(),
             });
-        } else if selected_text.is_some() {
-            self.copy_selection(true, window, cx);
+        } else if let Some(text) = selected_text {
+            self.copy_and_paste_selection(text, window, cx);
         } else {
             self.paste(window, cx);
         }
@@ -938,14 +934,14 @@ impl TerminalView {
         cx.notify();
     }
 
-    /// 中键默认只在鼠标模式里上报。`middle_click_paste` 打开后，终端自己
-    /// 处理指针时改为粘贴剪贴板；应用鼠标模式仍优先，Shift 与滚轮一样旁路。
+    /// 中键：应用鼠标模式下上报给应用（Shift 旁路）；否则有选区时复制并同时粘贴，无选区时粘贴剪贴板。
     pub(super) fn on_middle_down(
         &mut self,
         event: &MouseDownEvent,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.shift_copy_armed = false;
         window.focus(&self.focus_handle, cx);
         cx.emit(TerminalViewEvent::FocusRequested);
         if suggest::popup_dismiss(&mut self.suggest) {
@@ -963,12 +959,18 @@ impl TerminalView {
                 true,
                 &event.modifiers,
             );
-        } else if cx
-            .try_global::<crate::gpui_shell::config::Settings>()
-            .is_some_and(|settings| settings.middle_click_paste)
-        {
+        } else {
             // Shift already bypasses application mouse mode, matching the wheel.
-            self.paste(window, cx);
+            let selected_text = self
+                .session
+                .as_ref()
+                .and_then(|session| session.term.lock().selection_to_string())
+                .filter(|text| !text.is_empty());
+            if let Some(text) = selected_text {
+                self.copy_and_paste_selection(text, window, cx);
+            } else {
+                self.paste(window, cx);
+            }
             cx.stop_propagation();
         }
         cx.notify();
@@ -1007,6 +1009,7 @@ impl TerminalView {
         _window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.shift_copy_armed = false;
         if application_only && !self.term_mode().contains(TermMode::ALT_SCREEN) {
             return;
         }

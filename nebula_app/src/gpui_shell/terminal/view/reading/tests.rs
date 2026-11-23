@@ -67,7 +67,6 @@ fn native_result_desktop_visual_review() {
                             view.session = Some(session);
                             view.error = None;
                             view.exited = None;
-                            view.copy_on_select = false;
                             view.ghost_enabled = false;
                             view.spawn_at = std::time::Instant::now() - Duration::from_secs(1);
                             StreamProcessor::default().feed(
@@ -1191,7 +1190,6 @@ fn open_with_cache(
             view.session = Some(session);
             view.error = None;
             view.exited = None;
-            view.copy_on_select = false;
             view.ghost_enabled = false;
             // 布局仍走真实路径；跳过启动宽限期避免定时器掩盖 resize 断言。
             view.spawn_at = std::time::Instant::now() - std::time::Duration::from_secs(1);

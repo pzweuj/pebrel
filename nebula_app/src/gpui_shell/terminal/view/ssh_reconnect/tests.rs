@@ -35,7 +35,6 @@ fn open(cx: &mut TestAppContext) -> (Entity<TerminalView>, VisualTestContext, Re
         let receiver = terminal.update(cx, |view, cx| {
             let receiver = view.install_remote_files_test_session("fixture@example.invalid", cx);
             view.spawn_at -= TerminalView::STARTUP_GRID_GRACE;
-            view.copy_on_select = false;
             view.ghost_enabled = false;
             receiver
         });

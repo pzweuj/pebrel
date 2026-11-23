@@ -489,8 +489,9 @@ pub struct TerminalView {
     pub(super) hint_config: Arc<UiConfig>,
     pub(super) link_hover: Option<super::osc_links::LinkHover>,
     pending_link_open: bool,
-    /// 选中即复制（旧壳 `copy_on_select`）；关闭时复制交给右键路径。
-    copy_on_select: bool,
+    /// 选中后单击 Shift 复制：按下纯 Shift 时武装，未叠加其他键/点击则在抬起时复制。
+    shift_copy_armed: bool,
+    last_modifiers: gpui::Modifiers,
     /// 鼠标模式下最后上报的单元格：move 事件按"进入新单元格"去重。
     last_report_point: Option<TermPoint>,
     application_mouse: Option<application_mouse::Gesture>,
@@ -1166,7 +1167,6 @@ impl TerminalView {
         ];
         let font_size = px(settings.font_size_px);
         let palette = Arc::new(settings.palette.clone());
-        let copy_on_select = settings.copy_on_select;
         let default_cursor_style = settings.term_config().default_cursor_style;
         let cursor_style_changed = self.default_cursor_style != default_cursor_style;
         self.ghost_enabled = settings.ghost;
@@ -1203,7 +1203,6 @@ impl TerminalView {
             );
         }
         self.palette = palette;
-        self.copy_on_select = copy_on_select;
         self.scrollbar_visibility = settings.scrollbar_visibility;
         self.default_cursor_style = default_cursor_style;
         if let Some(session) = &self.session {
@@ -1274,14 +1273,14 @@ impl TerminalView {
     }
 
     /// 复制选区并返回是否实际写入剪贴板。`notify` 表示显式复制
-    /// （Ctrl+Shift+C、右键或自定义 Copy）：成功后清除选区并弹确认 toast；
-    /// copy_on_select 刻意静默且保留选区，避免鼠标抬手后立刻失去视觉反馈。
+    /// （Shift、Ctrl+Shift+C、右键/中键或自定义 Copy）：成功后清除选区并弹确认 toast。
     pub fn copy_selection(
         &mut self,
         notify: bool,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
+        self.shift_copy_armed = false;
         let Some(session) = &self.session else { return false };
         let text = session.term.lock().selection_to_string();
         let Some(text) = text.filter(|text| !text.is_empty()) else { return false };
@@ -1360,7 +1359,44 @@ impl TerminalView {
         }
     }
 
+    fn on_modifiers_changed(
+        &mut self,
+        event: &gpui::ModifiersChangedEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let mods = event.modifiers;
+        let only_shift =
+            mods.shift && !mods.control && !mods.alt && !mods.platform && !mods.function;
+        let no_mods = !mods.shift && !mods.control && !mods.alt && !mods.platform && !mods.function;
+        let prev = self.last_modifiers;
+        self.last_modifiers = mods;
+
+        if !self.focus_handle.is_focused(window)
+            || self.exited.is_some()
+            || self.answer_reader.is_some()
+            || self.marked_text.is_some()
+        {
+            self.shift_copy_armed = false;
+            return;
+        }
+
+        let prev_empty =
+            !prev.shift && !prev.control && !prev.alt && !prev.platform && !prev.function;
+        if only_shift && prev_empty && !self.selecting && !self.selection_is_empty() {
+            self.shift_copy_armed = true;
+        } else if no_mods && prev.shift && self.shift_copy_armed {
+            self.shift_copy_armed = false;
+            if !self.selecting && !self.selection_is_empty() {
+                self.copy_selection(true, window, cx);
+            }
+        } else {
+            self.shift_copy_armed = false;
+        }
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, window: &mut Window, cx: &mut Context<Self>) {
+        self.shift_copy_armed = false;
         // 搜索输入具有独立焦点，祖先终端不得再次把同一按键写入 PTY。
         if !self.focus_handle.is_focused(window) {
             return;
@@ -1613,6 +1649,7 @@ impl gpui::EntityInputHandler for TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.shift_copy_armed = false;
         if self.answer_reader.is_some() || !self.focus_handle.is_focused(window) {
             return;
         }
@@ -1637,6 +1674,7 @@ impl gpui::EntityInputHandler for TerminalView {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.shift_copy_armed = false;
         if self.answer_reader.is_some() || !self.focus_handle.is_focused(window) {
             return;
         }
@@ -1702,6 +1740,7 @@ impl Render for TerminalView {
             .on_action(cx.listener(Self::on_terminal_tab))
             .on_action(cx.listener(Self::on_terminal_back_tab))
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_modifiers_changed(cx.listener(Self::on_modifiers_changed))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_mouse_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_right_down))
             .on_mouse_down(MouseButton::Middle, cx.listener(Self::on_middle_down))

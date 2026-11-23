@@ -189,7 +189,7 @@ async fn upload(
     let cleanup = uploaded.cleanup.as_mut().unwrap();
     cleanup.files = plan.files.iter().map(|file| file.remote.clone()).collect();
     cleanup.directories.extend(plan.directories.iter().cloned());
-    context.set_total(plan.total);
+    context.set_plan(plan.total, plan.files.len());
     execute_upload_plan(&session, plan, options, context).await?;
     context.check_cancelled()?;
     Ok(uploaded)

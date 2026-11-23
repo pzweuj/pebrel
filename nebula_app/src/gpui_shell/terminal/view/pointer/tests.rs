@@ -111,7 +111,6 @@ fn character_art_drag_maps_visual_rows_back_to_exact_source_text(cx: &mut TestAp
     let terminal = probe.read_with(&cx, |probe, _| probe.terminal.clone());
     let receiver = terminal.update(&mut cx, |view, cx| {
         let receiver = view.install_completion_test_session();
-        view.copy_on_select = false;
         // 虚拟字体的自然格是 9×13；显式构造高行格，验证本次比例修正的鼠标路径。
         view.line_height_multiplier = Some(2.0);
         let mut wire = String::from("\x1b[2J\x1b[HBody stays on its original row");
@@ -231,7 +230,6 @@ fn link_fixture(
         view.session = Some(session);
         view.error = None;
         view.exited = None;
-        view.copy_on_select = false;
         // Use the production matcher and dispatcher with a deterministic action;
         // tests must not launch a user's browser or editor.
         let mut config = UiConfig::default();
@@ -275,21 +273,18 @@ fn control_right_click_opens_menu_and_plain_right_click_pastes(cx: &mut TestAppC
         })
     });
     let point = cell(&terminal, &cx, 2);
-    for (copy_on_select, expected_requests) in [(false, 1), (true, 2)] {
-        terminal.update(&mut cx, |view, _| view.copy_on_select = copy_on_select);
-        let modifiers = Modifiers { control: true, ..Modifiers::default() };
-        cx.simulate_mouse_down(point, MouseButton::Right, modifiers);
-        cx.simulate_mouse_up(point, MouseButton::Right, modifiers);
-        draw(&mut cx);
-        assert_eq!(requests.get(), expected_requests);
-        assert!(!receiver.try_iter().any(|message| matches!(message, Msg::Input(_))));
-        assert_eq!(clipboard(&mut cx).as_deref(), Some("before"));
-        cx.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
-        cx.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
-        draw(&mut cx);
-        assert_eq!(requests.get(), expected_requests);
-        assert_eq!(input_bytes(&receiver), b"before");
-    }
+    let modifiers = Modifiers { control: true, ..Modifiers::default() };
+    cx.simulate_mouse_down(point, MouseButton::Right, modifiers);
+    cx.simulate_mouse_up(point, MouseButton::Right, modifiers);
+    draw(&mut cx);
+    assert_eq!(requests.get(), 1);
+    assert!(!receiver.try_iter().any(|message| matches!(message, Msg::Input(_))));
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("before"));
+    cx.simulate_mouse_down(point, MouseButton::Right, Modifiers::default());
+    cx.simulate_mouse_up(point, MouseButton::Right, Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(requests.get(), 1);
+    assert_eq!(input_bytes(&receiver), b"before");
 }
 
 fn input_bytes(receiver: &std::sync::mpsc::Receiver<Msg>) -> Vec<u8> {
@@ -304,60 +299,92 @@ fn input_bytes(receiver: &std::sync::mpsc::Receiver<Msg>) -> Vec<u8> {
 }
 
 #[gpui::test]
-fn right_click_copies_selection_then_pastes_with_both_copy_preferences(cx: &mut TestAppContext) {
-    for copy_on_select in [false, true] {
-        for mouse_mode in [false, true] {
-            let (terminal, mut cx, receiver) = link_fixture(cx, b"selected text\r\nprompt> ");
-            terminal.update(&mut cx, |view, _| {
-                view.copy_on_select = copy_on_select;
-                if mouse_mode {
-                    super::super::startup_tests::feed(view, b"\x1b[?1000h\x1b[?1006h");
-                }
-            });
-            // Shift 绕过应用鼠标上报后，仍使用同一套本地选择与复制语义。
-            let modifiers = Modifiers { shift: mouse_mode, ..Modifiers::default() };
-            let (start, end) = terminal.read_with(&cx, |view, _| {
-                (
-                    point(
-                        view.origin.x + view.cell_width * 0.25,
-                        view.origin.y + view.line_height * 0.5,
-                    ),
-                    point(
-                        view.origin.x + view.cell_width * 7.75,
-                        view.origin.y + view.line_height * 0.5,
-                    ),
-                )
-            });
-            cx.simulate_mouse_down(start, MouseButton::Left, modifiers);
-            cx.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
-            cx.simulate_mouse_up(end, MouseButton::Left, modifiers);
-            draw(&mut cx);
-            assert_eq!(
-                clipboard(&mut cx).as_deref(),
-                Some(if copy_on_select { "selected" } else { "before" })
-            );
-            assert!(terminal.read_with(&cx, |view, _| {
-                view.session.as_ref().unwrap().term.lock().selection.is_some()
-            }));
-            assert!(input_bytes(&receiver).is_empty());
+fn selection_does_not_auto_copy_and_shift_tap_copies_without_pasting(cx: &mut TestAppContext) {
+    let (terminal, mut cx, receiver) = link_fixture(cx, b"selected text\r\nprompt> ");
+    let (start, end, extended) = terminal.read_with(&cx, |view, _| {
+        (
+            point(view.origin.x + view.cell_width * 0.25, view.origin.y + view.line_height * 0.5),
+            point(view.origin.x + view.cell_width * 7.75, view.origin.y + view.line_height * 0.5),
+            point(view.origin.x + view.cell_width * 12.75, view.origin.y + view.line_height * 0.5),
+        )
+    });
+    cx.simulate_mouse_down(start, MouseButton::Left, Modifiers::default());
+    cx.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
+    cx.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("before"), "selection alone must not copy");
+    assert!(input_bytes(&receiver).is_empty());
 
-            cx.simulate_mouse_down(end, MouseButton::Right, modifiers);
-            cx.simulate_mouse_up(end, MouseButton::Right, modifiers);
-            draw(&mut cx);
-            assert_eq!(clipboard(&mut cx).as_deref(), Some("selected"));
-            assert!(terminal.read_with(&cx, |view, _| {
-                view.session.as_ref().unwrap().term.lock().selection.is_none()
-            }));
-            assert!(
-                input_bytes(&receiver).is_empty(),
-                "copy must not also paste or report mouse input"
-            );
+    // Shift+click extends selection without copying on Shift release.
+    let shift = Modifiers { shift: true, ..Modifiers::default() };
+    cx.simulate_modifiers_change(shift);
+    cx.simulate_mouse_down(extended, MouseButton::Left, shift);
+    cx.simulate_mouse_up(extended, MouseButton::Left, shift);
+    cx.simulate_modifiers_change(Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("before"));
 
-            cx.simulate_mouse_down(end, MouseButton::Right, modifiers);
-            cx.simulate_mouse_up(end, MouseButton::Right, modifiers);
-            draw(&mut cx);
-            assert_eq!(input_bytes(&receiver), b"selected");
-        }
+    // A clean Shift tap copies the selection without pasting.
+    cx.simulate_modifiers_change(shift);
+    cx.simulate_modifiers_change(Modifiers::default());
+    draw(&mut cx);
+    assert_eq!(clipboard(&mut cx).as_deref(), Some("selected text"));
+    assert!(terminal.read_with(&cx, |view, _| {
+        view.session.as_ref().unwrap().term.lock().selection.is_none()
+    }));
+    assert!(input_bytes(&receiver).is_empty(), "Shift tap copies without pasting");
+}
+
+#[gpui::test]
+fn right_click_with_selection_copies_and_pastes_together(cx: &mut TestAppContext) {
+    for mouse_mode in [false, true] {
+        let (terminal, mut cx, receiver) = link_fixture(cx, b"selected text\r\nprompt> ");
+        terminal.update(&mut cx, |view, _| {
+            if mouse_mode {
+                super::super::startup_tests::feed(view, b"\x1b[?1000h\x1b[?1006h");
+            }
+        });
+        // Shift 绕过应用鼠标上报后，仍使用同一套本地选择与复制粘贴语义。
+        let modifiers = Modifiers { shift: mouse_mode, ..Modifiers::default() };
+        let (start, end) = terminal.read_with(&cx, |view, _| {
+            (
+                point(
+                    view.origin.x + view.cell_width * 0.25,
+                    view.origin.y + view.line_height * 0.5,
+                ),
+                point(
+                    view.origin.x + view.cell_width * 7.75,
+                    view.origin.y + view.line_height * 0.5,
+                ),
+            )
+        });
+        cx.simulate_mouse_down(start, MouseButton::Left, modifiers);
+        cx.simulate_mouse_move(end, Some(MouseButton::Left), modifiers);
+        cx.simulate_mouse_up(end, MouseButton::Left, modifiers);
+        draw(&mut cx);
+        assert_eq!(clipboard(&mut cx).as_deref(), Some("before"));
+        assert!(terminal.read_with(&cx, |view, _| {
+            view.session.as_ref().unwrap().term.lock().selection.is_some()
+        }));
+        assert!(input_bytes(&receiver).is_empty());
+
+        cx.simulate_mouse_down(end, MouseButton::Right, modifiers);
+        cx.simulate_mouse_up(end, MouseButton::Right, modifiers);
+        draw(&mut cx);
+        assert_eq!(clipboard(&mut cx).as_deref(), Some("selected"));
+        assert!(terminal.read_with(&cx, |view, _| {
+            view.session.as_ref().unwrap().term.lock().selection.is_none()
+        }));
+        assert_eq!(
+            input_bytes(&receiver),
+            b"selected",
+            "right click with selection copies and pastes"
+        );
+
+        cx.simulate_mouse_down(end, MouseButton::Right, modifiers);
+        cx.simulate_mouse_up(end, MouseButton::Right, modifiers);
+        draw(&mut cx);
+        assert_eq!(input_bytes(&receiver), b"selected");
     }
 }
 
@@ -788,7 +815,6 @@ fn scrollbar_modes_keep_live_drag_visible_and_preserve_hidden_selection(cx: &mut
         view.apply_settings(cx);
         view.error = None;
         view.spawn_at -= TerminalView::STARTUP_GRID_GRACE;
-        view.copy_on_select = false;
         let history = (0..5000).map(|line| format!("row-{line}\r\n")).collect::<String>();
         super::super::startup_tests::feed(view, history.as_bytes());
         cx.notify();
@@ -894,17 +920,11 @@ fn scrollbar_modes_never_capture_without_history_and_hover_clears_on_leave(
 }
 
 #[gpui::test]
-fn middle_click_paste_follows_setting_and_shift_bypasses_mouse_mode(cx: &mut TestAppContext) {
+fn middle_click_copies_and_pastes_selection_and_shift_bypasses_mouse_mode(cx: &mut TestAppContext) {
     let (terminal, mut window, receiver) = link_fixture(cx, b"selected text\r\nprompt> ");
     let point_at = cell(&terminal, &window, 2);
 
-    window.update(|_, cx| cx.global_mut::<Settings>().middle_click_paste = false);
-    window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
-    window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
-    draw(&mut window);
-    assert!(input_bytes(&receiver).is_empty(), "middle-click paste disabled must not paste");
-
-    window.update(|_, cx| cx.global_mut::<Settings>().middle_click_paste = true);
+    // Without selection, middle-click pastes clipboard.
     window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
     window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
     draw(&mut window);
@@ -925,10 +945,9 @@ fn middle_click_paste_follows_setting_and_shift_bypasses_mouse_mode(cx: &mut Tes
     draw(&mut window);
     assert_eq!(input_bytes(&receiver), b"before");
 
-    // With copy_on_select enabled, selecting text and middle-clicking pastes the selected text.
+    // With selection, middle-click copies to clipboard and pastes simultaneously.
     terminal.update(&mut window, |view, _| {
         super::super::startup_tests::feed(view, b"\x1b[?1000l\x1b[?1006l");
-        view.copy_on_select = true;
     });
     let (start, end) = terminal.read_with(&window, |view, _| {
         (
@@ -940,8 +959,13 @@ fn middle_click_paste_follows_setting_and_shift_bypasses_mouse_mode(cx: &mut Tes
     window.simulate_mouse_move(end, Some(MouseButton::Left), Modifiers::default());
     window.simulate_mouse_up(end, MouseButton::Left, Modifiers::default());
     draw(&mut window);
+    assert_eq!(clipboard(&mut window).as_deref(), Some("before"));
     window.simulate_mouse_down(point_at, MouseButton::Middle, Modifiers::default());
     window.simulate_mouse_up(point_at, MouseButton::Middle, Modifiers::default());
     draw(&mut window);
+    assert_eq!(clipboard(&mut window).as_deref(), Some("selected"));
     assert_eq!(input_bytes(&receiver), b"selected");
+    assert!(terminal.read_with(&window, |view, _| {
+        view.session.as_ref().unwrap().term.lock().selection.is_none()
+    }));
 }

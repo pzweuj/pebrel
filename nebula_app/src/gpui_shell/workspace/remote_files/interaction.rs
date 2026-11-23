@@ -59,11 +59,14 @@ impl NebulaWorkspace {
                     _ => paths.len() as isize,
                 };
                 self.remote_browser.selection.step(&paths, delta, toggle, modifiers.shift);
+                let parent_offset = usize::from(self.remote_parent_row().is_some());
                 if let Some(index) = paths
                     .iter()
                     .position(|path| Some(*path) == self.remote_browser.selection.focus())
+                    && let Some(scroll_index) = index.checked_sub(parent_offset)
                 {
-                    self.remote_files_scroll.scroll_to_item(index, gpui::ScrollStrategy::Nearest);
+                    self.remote_files_scroll
+                        .scroll_to_item(scroll_index, gpui::ScrollStrategy::Nearest);
                 }
             },
             "a" if toggle => {

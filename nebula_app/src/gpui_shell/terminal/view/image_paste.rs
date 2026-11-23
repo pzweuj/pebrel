@@ -90,24 +90,39 @@ struct StagedImage {
 
 impl TerminalView {
     pub fn paste(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        self.shift_copy_armed = false;
         let Some(payload) = cx.read_from_clipboard().and_then(clipboard_payload) else { return };
         match payload {
-            ClipboardPayload::Text(text) => {
-                if self.try_native_clipboard_paste(&text, true, cx) {
-                    return;
-                }
-                let lines = paste_line_count(&text);
-                if nebula_settings::RuntimeSettings::load().multiline_paste_confirm
-                    && paste_needs_confirmation(&text, self.term_mode())
-                {
-                    self.confirm_paste(text, lines, window, cx);
-                } else {
-                    self.paste_now(&text, cx);
-                }
-            },
+            ClipboardPayload::Text(text) => self.paste_text(text, window, cx),
             ClipboardPayload::Image(bytes) => self.paste_image(bytes, window, cx),
             ClipboardPayload::Files(paths) => self.drop_external_paths(&paths, window, cx),
         }
+    }
+
+    pub(super) fn paste_text(&mut self, text: String, window: &mut Window, cx: &mut Context<Self>) {
+        if self.try_native_clipboard_paste(&text, true, cx) {
+            return;
+        }
+        let lines = paste_line_count(&text);
+        if nebula_settings::RuntimeSettings::load().multiline_paste_confirm
+            && paste_needs_confirmation(&text, self.term_mode())
+        {
+            self.confirm_paste(text, lines, window, cx);
+        } else {
+            self.paste_now(&text, cx);
+        }
+    }
+
+    pub(super) fn copy_and_paste_selection(
+        &mut self,
+        text: String,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !self.copy_selection(true, window, cx) {
+            return;
+        }
+        self.paste_text(text, window, cx);
     }
 
     fn image_target(&self) -> ImageTarget {
