@@ -891,7 +891,7 @@
     "finish_editing": "Done",
     "finish_editing_shortcut": "Finish editing (Ctrl+Enter / ⌘Enter)",
     "edit_block": "Edit this paragraph",
-    "right_sidebar": "Toggle right sidebar",
+    "right_sidebar": "Toggle SFTP",
     "loading": "Loading file…",
     "loading_progress": "Loading… {received} / {total}",
     "save": "Save",

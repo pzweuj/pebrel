@@ -87,16 +87,14 @@ try {
         'skills/pebrel-runtime/agents/openai.yaml'
     ) | Sort-Object
 
-    $optionalRuntime = Join-Path $repo 'packaging\windows\x11'
+    $optionalRuntime = Join-Path $repo 'packaging\windows\x11\vcxsrv'
     if (Test-Path -LiteralPath $optionalRuntime) {
         $expected += @(Get-ChildItem -LiteralPath $optionalRuntime -Recurse -File | ForEach-Object {
-            'x11/' + [IO.Path]::GetRelativePath($optionalRuntime, $_.FullName).Replace('\', '/')
+            'x11/vcxsrv/' + [IO.Path]::GetRelativePath($optionalRuntime, $_.FullName).Replace('\', '/')
         })
         $expected = @($expected | Sort-Object)
-        if (Test-Path -LiteralPath (Join-Path $optionalRuntime 'yserver\yserver.exe')) {
-            foreach ($required in @('x11/yserver/yserver.exe', 'x11/yserver/LICENSE.txt', 'x11/yserver/xkb/rules/evdev')) {
-                if ($required -notin $actual) { throw "Incomplete optional yserver payload: $required" }
-            }
+        foreach ($required in @('x11/vcxsrv/vcxsrv.exe', 'x11/vcxsrv/COPYING', 'x11/vcxsrv/xkbdata/rules/base')) {
+            if ($required -notin $actual) { throw "Incomplete VcXsrv payload: $required" }
         }
     }
 

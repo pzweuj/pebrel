@@ -1,6 +1,6 @@
 //! Local X display used by SSH X11 forwarding.
 //!
-//! Windows prefers VcXsrv for application compatibility, with optional yserver. Other
+//! Windows uses bundled or installed VcXsrv. Other
 //! platforms use the display already selected by `DISPLAY`. The server is a
 //! separate process so its license stays outside `pebrel.exe`.
 
@@ -186,21 +186,6 @@ fn stop(mut running: Running) {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Backend {
-    Yserver,
-    Vcxsrv,
-}
-
-impl Backend {
-    fn filename(self) -> &'static str {
-        match self {
-            Self::Yserver => "yserver.exe",
-            Self::Vcxsrv => "vcxsrv.exe",
-        }
-    }
-}
-
 #[cfg(windows)]
 fn start() -> Result<Shared, String> {
     let candidates = server_candidates();
@@ -212,16 +197,16 @@ fn start() -> Result<Shared, String> {
 
 #[cfg(any(windows, test))]
 fn start_candidates(
-    candidates: Vec<(Backend, PathBuf)>,
-    mut launch: impl FnMut(Backend, &Path) -> Result<Shared, String>,
+    candidates: Vec<PathBuf>,
+    mut launch: impl FnMut(&Path) -> Result<Shared, String>,
 ) -> Result<Shared, String> {
     let mut failures = Vec::new();
-    for (backend, executable) in candidates {
-        match launch(backend, &executable) {
+    for executable in candidates {
+        match launch(&executable) {
             Ok(display) => return Ok(display),
             Err(error) => {
                 log::warn!("{} failed: {error}", executable.display());
-                failures.push(format!("{}: {error}", backend.filename()));
+                failures.push(format!("{}: {error}", executable.display()));
             },
         }
     }
@@ -229,32 +214,24 @@ fn start_candidates(
 }
 
 #[cfg(windows)]
-fn start_server(backend: Backend, executable: &Path) -> Result<Shared, String> {
+fn start_server(executable: &Path) -> Result<Shared, String> {
     let display = free_display()?;
     let cookie = random_cookie();
     let authority = authority_path()?;
     write_authority(&authority, display, &cookie)
         .map_err(|error| format!("could not write the X11 authority file: {error}"))?;
     let mut authority_cleanup = AuthorityCleanup(Some(authority.clone()));
-    let log = authority.parent().unwrap_or(Path::new(".")).join(format!(
-        "{}-{}-{display}.log",
-        backend.filename(),
-        std::process::id()
-    ));
-    let mut command = Command::new(&executable);
+    let temporary = authority.parent().ok_or("missing X11 runtime directory")?;
+    let log = temporary.join(format!("vcxsrv.exe-{}-{display}.log", std::process::id()));
+    let mut command = Command::new(executable);
     command
         .current_dir(executable.parent().unwrap_or(Path::new(".")))
-        .args(backend_args(backend, display, &authority, &log));
-    if backend == Backend::Vcxsrv {
-        windows_shell::configure(&mut command)?;
-        // xkbcomp uses server-N.xkm in TEMP. Keep stale or concurrent displays
-        // from colliding with this display's keyboard output.
-        let temporary = authority.parent().ok_or("missing X11 runtime directory")?;
-        command.env("TEMP", temporary).env("TMP", temporary);
-    }
-    let output_path =
-        if backend == Backend::Yserver { log.clone() } else { log.with_extension("stderr.log") };
-    let output = std::fs::File::create(output_path).map_err(|error| error.to_string())?;
+        .args(server_args(display, &authority, &log));
+    windows_shell::configure(&mut command)?;
+    // xkbcomp uses server-N.xkm in TEMP. Isolate concurrent displays.
+    command.env("TEMP", temporary).env("TMP", temporary);
+    let output = std::fs::File::create(log.with_extension("stderr.log"))
+        .map_err(|error| error.to_string())?;
     command.stdout(output.try_clone().map_err(|error| error.to_string())?).stderr(output);
     crate::platform::process::configure_process_group(&mut command);
     let mut child =
@@ -287,24 +264,13 @@ fn start_server(backend: Backend, executable: &Path) -> Result<Shared, String> {
     })
 }
 
-fn backend_args(backend: Backend, display: u16, authority: &Path, log: &Path) -> Vec<String> {
-    match backend {
-        Backend::Yserver => vec![
-            format!(":{display}"),
-            "--rootless".into(),
-            "-auth".into(),
-            authority.display().to_string(),
-        ],
-        Backend::Vcxsrv => server_args(display, authority, log),
-    }
-}
-
 fn server_args(display: u16, authority: &Path, log: &Path) -> Vec<String> {
     // Current VcXsrv follows X.Org and does not listen on TCP unless asked.
     // Without this, the process can be alive while port 6000+n never opens.
     vec![
         format!(":{display}"),
         "-multiwindow".to_owned(),
+        "-notrayicon".to_owned(),
         "-clipboard".to_owned(),
         "-silent-dup-error".to_owned(),
         "-noreset".to_owned(),
@@ -326,51 +292,29 @@ fn missing_server_message() -> String {
     });
     match expected {
         Some(path) => format!(
-            "Pebrel's X11 display is missing. Put yserver/yserver.exe or vcxsrv.exe, with its runtime files, under {}.",
+            "Pebrel's X11 display is missing. Put vcxsrv.exe with its runtime files under {}.",
             path.parent().unwrap_or(Path::new("x11")).display()
         ),
-        None => "Pebrel's X11 display is missing. Put yserver or VcXsrv under x11/ beside the application.".to_owned(),
+        None => "Pebrel's X11 display is missing. Put VcXsrv under x11/ beside the application."
+            .to_owned(),
     }
 }
 
 #[cfg(windows)]
-fn server_candidates() -> Vec<(Backend, PathBuf)> {
+fn server_candidates() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
-    if let Ok(executable) = std::env::current_exe() {
-        for backend in [Backend::Yserver, Backend::Vcxsrv] {
-            if let Some(found) = executable
-                .parent()
-                .and_then(|parent| find_backend_under(&parent.join("x11"), backend))
-            {
-                candidates.push((backend, found));
-            }
-        }
+    if let Some(bundled) = std::env::current_exe().ok().and_then(|exe| server_beside(&exe)) {
+        candidates.push(bundled);
     }
     for var in ["ProgramFiles", "ProgramFiles(x86)"] {
         if let Some(root) = std::env::var_os(var) {
             let installed = PathBuf::from(root).join("VcXsrv").join("vcxsrv.exe");
-            if installed.is_file() {
-                if !candidates.iter().any(|(_, path)| *path == installed) {
-                    candidates.push((Backend::Vcxsrv, installed));
-                }
+            if installed.is_file() && !candidates.contains(&installed) {
+                candidates.push(installed);
             }
         }
     }
-    order_candidates(&mut candidates, std::env::var("PEBREL_X11_BACKEND").ok().as_deref());
     candidates
-}
-
-#[cfg(any(windows, test))]
-fn order_candidates(candidates: &mut [(Backend, PathBuf)], preference: Option<&str>) {
-    let preferred = match preference {
-        Some("yserver") => Backend::Yserver,
-        Some("vcxsrv" | "auto") | None => Backend::Vcxsrv,
-        Some(value) => {
-            log::warn!("Unknown PEBREL_X11_BACKEND {value:?}; preferring VcXsrv");
-            Backend::Vcxsrv
-        },
-    };
-    candidates.sort_by_key(|(backend, _)| *backend != preferred);
 }
 
 fn server_beside(executable: &Path) -> Option<PathBuf> {
@@ -379,11 +323,7 @@ fn server_beside(executable: &Path) -> Option<PathBuf> {
 
 /// Accept a flat runtime or one installer subdirectory under `x11/`.
 fn find_server_under(directory: &Path) -> Option<PathBuf> {
-    find_backend_under(directory, Backend::Vcxsrv)
-}
-
-fn find_backend_under(directory: &Path, backend: Backend) -> Option<PathBuf> {
-    let direct = directory.join(backend.filename());
+    let direct = directory.join("vcxsrv.exe");
     if direct.is_file() {
         return Some(direct);
     }
@@ -393,7 +333,7 @@ fn find_backend_under(directory: &Path, backend: Backend) -> Option<PathBuf> {
         if !path.is_dir() {
             continue;
         }
-        let nested = path.join(backend.filename());
+        let nested = path.join("vcxsrv.exe");
         if nested.is_file() {
             return Some(nested);
         }
@@ -604,25 +544,12 @@ mod tests {
     use super::*;
 
     #[test]
-    fn compatibility_backend_is_preferred_unless_yserver_is_requested() {
-        for (preference, preferred) in [
-            (None, Backend::Vcxsrv),
-            (Some("auto"), Backend::Vcxsrv),
-            (Some("vcxsrv"), Backend::Vcxsrv),
-            (Some("yserver"), Backend::Yserver),
-            (Some("invalid"), Backend::Vcxsrv),
-        ] {
-            let mut candidates = vec![
-                (Backend::Yserver, "bundled-yserver".into()),
-                (Backend::Vcxsrv, "bundled-vcxsrv".into()),
-                (Backend::Vcxsrv, "installed-vcxsrv".into()),
-            ];
-            order_candidates(&mut candidates, preference);
-            assert_eq!(candidates[0].0, preferred);
-            let vcxsrv: Vec<_> = candidates.iter().filter(|(b, _)| *b == Backend::Vcxsrv).collect();
-            assert_eq!(vcxsrv[0].1, Path::new("bundled-vcxsrv"));
-            assert_eq!(vcxsrv[1].1, Path::new("installed-vcxsrv"));
-        }
+    fn leftover_yserver_is_not_a_display_candidate() {
+        let root = tempfile::tempdir().unwrap();
+        let old = root.path().join("x11/yserver");
+        std::fs::create_dir_all(&old).unwrap();
+        std::fs::write(old.join("yserver.exe"), b"old runtime").unwrap();
+        assert!(server_beside(&root.path().join("pebrel.exe")).is_none());
     }
 
     fn sample() -> Shared {
@@ -643,51 +570,26 @@ mod tests {
     }
 
     #[test]
-    fn a_failed_yserver_falls_back_to_vcxsrv_and_keeps_failure_details() {
-        let candidates = || {
-            vec![(Backend::Yserver, "yserver.exe".into()), (Backend::Vcxsrv, "vcxsrv.exe".into())]
-        };
+    fn failed_bundled_vcxsrv_falls_back_to_installed_and_keeps_both_diagnostics() {
+        let bundled = PathBuf::from("bundled/vcxsrv.exe");
+        let installed = PathBuf::from("installed/vcxsrv.exe");
+        let candidates = vec![bundled.clone(), installed.clone()];
         let mut tried = Vec::new();
-        let result = start_candidates(candidates(), |backend, _| {
-            tried.push(backend);
-            if backend == Backend::Yserver {
-                Err("Vulkan unavailable".into())
-            } else {
-                Ok(sample())
-            }
+        let result = start_candidates(candidates.clone(), |path| {
+            tried.push(path.to_path_buf());
+            if path == bundled { Err("not ready".into()) } else { Ok(sample()) }
         });
         assert!(result.is_ok());
-        assert_eq!(tried, [Backend::Yserver, Backend::Vcxsrv]);
-        let failure = start_candidates(candidates(), |_, _| Err("not ready".into())).err().unwrap();
-        assert!(failure.contains("yserver.exe") && failure.contains("vcxsrv.exe"));
-        let args = backend_args(Backend::Yserver, 21, Path::new("auth"), Path::new("log"));
-        assert_eq!(args, [":21", "--rootless", "-auth", "auth"]);
+        assert_eq!(tried, candidates);
+        let failure = start_candidates(candidates, |_| Err("not ready".into())).err().unwrap();
+        for path in [bundled, installed] {
+            assert!(failure.contains(&format!("{}: not ready", path.display())));
+        }
     }
 
     #[cfg(windows)]
     #[test]
-    #[ignore = "launches the real optional X display; set PEBREL_Y_SERVER_TEST_EXE"]
-    fn real_yserver_authenticates_and_releases_its_process() {
-        let executable =
-            std::env::var_os("PEBREL_Y_SERVER_TEST_EXE").expect("explicit test runtime");
-        let display = start_server(Backend::Yserver, Path::new(&executable)).unwrap();
-        let DisplayTarget::Tcp { port, .. } = display.target else { panic!("TCP display") };
-        let pid = display.running.child.as_ref().unwrap().id();
-        probe_display(port, &display.cookie).unwrap();
-        assert!(probe_display(port, &[0; 16]).is_err(), "wrong cookies must not connect");
-        probe_display(port, &display.cookie).unwrap();
-        let authority = display.running.authority.clone().unwrap();
-        stop(display.running);
-        assert!(!authority.exists());
-        assert!(
-            std::net::TcpStream::connect(("127.0.0.1", port)).is_err(),
-            "owned server {pid} must stop"
-        );
-    }
-
-    #[cfg(windows)]
-    #[test]
-    #[ignore = "requires the verified runtime beside the test executable under x11/yserver"]
+    #[ignore = "requires VcXsrv beside the test executable under x11/ or installed"]
     fn real_resident_display_survives_the_last_ssh_lease_and_stops_with_its_owner() {
         assert!(std::env::var_os("PEBREL_TEST_RESIDENT_X11").is_some());
         let resident = Resident::start();
@@ -718,6 +620,7 @@ mod tests {
         let log = Path::new("auth-dir").join("vcxsrv-20.log");
         let args = server_args(20, &authority, &log);
         assert_eq!(args[0], ":20");
+        assert!(args.iter().any(|arg| arg == "-notrayicon"));
         assert!(args.iter().any(|arg| arg == "-noreset"));
         assert!(
             has_pair(&args, "-listen", "tcp"),

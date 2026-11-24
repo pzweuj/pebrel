@@ -4,6 +4,34 @@ Every release entry is provided in English and Simplified Chinese.
 
 每个版本条目均同时提供英文和简体中文说明。
 
+## 2.6.6 - 2026-11-24
+
+### English
+
+#### Fixed
+
+- Match the selected top session tab to the terminal background and give inactive tabs a distinct tint.
+
+#### Improved
+
+- Label the sidebar toggle “Toggle SFTP” and keep its existing click behavior.
+- Use VcXsrv as the sole Windows X11 server and hide its notification-area icon when Pebrel launches it.
+
+### 中文
+
+#### 修复
+
+- 顶部选中的会话标签与终端使用同一底色，未选中标签使用有区分度的底色。
+
+#### 改进
+
+- 将侧栏按钮提示改为「展开或收起 SFTP」，保留原有点击行为。
+- Windows X11 转发统一使用 VcXsrv，Pebrel 启动 VcXsrv 时隐藏其托盘图标。
+
+### Contributors
+
+Local build from the current working tree. / 基于当前工作区构建。
+
 ## 2.6.5 - 2026-11-24
 
 ### English

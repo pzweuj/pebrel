@@ -891,7 +891,7 @@
     "finish_editing": "完成",
     "finish_editing_shortcut": "结束编辑（Ctrl+Enter / ⌘Enter）",
     "edit_block": "编辑此段落",
-    "right_sidebar": "展开或收起右侧栏",
+    "right_sidebar": "展开或收起 SFTP",
     "loading": "正在读取文件…",
     "loading_progress": "正在加载… {received} / {total}",
     "save": "保存",

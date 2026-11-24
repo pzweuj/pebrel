@@ -77,11 +77,11 @@ $manifest = [ordered]@{
     'licenses/THIRD-PARTY-NOTICES'                   = Join-Path $repo 'THIRD-PARTY-NOTICES'
 }
 
-$x11Runtime = Join-Path $repo 'packaging\windows\x11'
+$x11Runtime = Join-Path $repo 'packaging\windows\x11\vcxsrv'
 if (Test-Path -LiteralPath $x11Runtime) {
     Get-ChildItem -LiteralPath $x11Runtime -File -Recurse | ForEach-Object {
         $relative = [IO.Path]::GetRelativePath($x11Runtime, $_.FullName).Replace('\', '/')
-        $manifest["x11/$relative"] = $_.FullName
+        $manifest["x11/vcxsrv/$relative"] = $_.FullName
     }
 }
 

@@ -43,6 +43,28 @@ const TOP_TAB_NUDGE_W: f32 = 22.0;
 /// 拖拽越界自动滚的触发带宽：指针进到视口左/右这么近就开始滚。
 const TOP_TAB_EDGE_BAND: f32 = 24.0;
 
+/// The active tab exposes the title bar's content-colored surface, even on hover.
+fn top_tab_fills(
+    theme: &gpui_component::Theme,
+    active: bool,
+    unread: bool,
+    dragged: bool,
+) -> (gpui::Hsla, Option<gpui::Hsla>) {
+    if active {
+        return (gpui::transparent_black(), None);
+    }
+    let (resting, hover) = if unread {
+        let dark = theme.is_dark();
+        (
+            theme.primary.opacity(if dark { 0.22 } else { 0.18 }),
+            theme.primary.opacity(if dark { 0.30 } else { 0.24 }),
+        )
+    } else {
+        (theme.list_hover, theme.accent)
+    };
+    if dragged { (hover, None) } else { (resting, Some(hover)) }
+}
+
 /// 左侧展开栏打开时，顶部标签在既有标题栏左内边距之外需要额外让出的宽度。
 /// 使首个 tab 始终与终端卡片左缘对齐（`drawer_width + TOP_TAB_LEFT_INSET`），
 /// 同时避免在 macOS 上与系统交通灯的 `base_left_inset` 重复叠加。
@@ -145,9 +167,7 @@ impl NebulaWorkspace {
         let port_forward_button = self.render_port_forward_button(cx);
         let theme = cx.theme();
         let muted = theme.muted_foreground;
-        let active_bg = theme.sidebar_accent;
         let active_fg = theme.sidebar_accent_foreground;
-        let hover_bg = theme.list_hover;
         let dark = theme.is_dark();
         let settings = cx.try_global::<crate::gpui_shell::config::Settings>();
         let tab_close_visible = settings.map(|settings| settings.tab_close_visible).unwrap_or(true);
@@ -212,8 +232,6 @@ impl NebulaWorkspace {
                 } = self.top_tab_presentation(ix, cx, dark);
                 let hover_group: SharedString = format!("top-tab-hover-{ix}").into();
                 let cross_window_drag = self.cross_window_drag_payload(ix, cx);
-                let unread_bg = theme.primary.opacity(if dark { 0.22 } else { 0.18 });
-                let unread_hover_bg = theme.primary.opacity(if dark { 0.30 } else { 0.24 });
                 let status_color = if active || has_unread { active_fg } else { muted };
                 let shows_shell_tag =
                     matches!(activity, SidebarActivity::Idle | SidebarActivity::Running)
@@ -302,6 +320,7 @@ impl NebulaWorkspace {
                     _ => (false, 0.0),
                 };
 
+                let (background, hover) = top_tab_fills(theme, active, has_unread, dragged);
                 let row = h_flex()
                     .id(("top-tab", ix))
                     .when_some(tooltip, |row, text| row.tooltip(move |window, cx| {
@@ -328,21 +347,10 @@ impl NebulaWorkspace {
                     // TitleBar 的父层是 WindowControlArea::Drag；tab 必须自己
                     // 占住普通鼠标命中区，滚轮仍交给外层标签滚动容器。
                     .block_mouse_except_scroll()
-                    .when(active, |item| item.bg(active_bg).text_color(active_fg))
-                    .when(!active && has_unread && !dragged, |item| {
-                        item.bg(unread_bg)
-                            .text_color(active_fg)
-                            .hover(move |style| style.bg(unread_hover_bg))
-                    })
-                    .when(!active && has_unread && dragged, |item| {
-                        item.bg(unread_hover_bg).text_color(active_fg)
-                    })
-                    .when(!active && !has_unread && !dragged, |item| {
-                        item.text_color(muted).hover(|style| style.bg(hover_bg))
-                    })
-                    .when(!active && !has_unread && dragged, |item| {
-                        item.text_color(muted).bg(hover_bg)
-                    })
+                    .bg(background)
+                    .text_color(status_color)
+                    .when(active, |item| item.border_t_1().border_color(active_fg))
+                    .when_some(hover, |item, color| item.hover(move |style| style.bg(color)))
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.activate_top_tab(ix, window, cx);
@@ -507,7 +515,7 @@ impl NebulaWorkspace {
                             .truncate()
                             .font_family(chrome_family.clone())
                             .text_size(px(label_px))
-                            .font_weight(if has_unread {
+                            .font_weight(if active || has_unread {
                                 FontWeight::MEDIUM
                             } else {
                                 FontWeight::NORMAL
@@ -885,6 +893,28 @@ impl NebulaWorkspace {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[cfg(feature = "gpui-test-support")]
+    #[gpui::test]
+    fn only_the_selected_tab_exposes_the_content_background(cx: &mut gpui::TestAppContext) {
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            for mode in [gpui_component::ThemeMode::Light, gpui_component::ThemeMode::Dark] {
+                gpui_component::Theme::change(mode, None, cx);
+                let theme = cx.theme();
+                for unread in [false, true] {
+                    for dragged in [false, true] {
+                        let (selected, hover) = top_tab_fills(theme, true, unread, dragged);
+                        assert_eq!(selected.a, 0.0);
+                        assert!(hover.is_none());
+                        let (inactive, hover) = top_tab_fills(theme, false, unread, dragged);
+                        assert!(inactive.a > 0.0);
+                        assert_eq!(hover.is_some(), !dragged);
+                    }
+                }
+            }
+        });
+    }
 
     #[test]
     fn tab_width_fills_then_clamps_to_single_row_bounds() {

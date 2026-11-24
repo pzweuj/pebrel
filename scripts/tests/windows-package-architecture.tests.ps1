@@ -14,12 +14,12 @@ try {
         foreach ($name in @('pebrel.exe', 'pebrel-cli.exe', 'pebrel-hook.exe', 'conpty.dll', 'OpenConsole.exe')) {
             [IO.File]::WriteAllBytes((Join-Path $fixtureRoot $name), $bytes)
         }
-        $existingServer = Join-Path $fixtureRoot 'x11\yserver\yserver.exe'
+        $existingServer = Join-Path $fixtureRoot 'x11\vcxsrv\vcxsrv.exe'
         if (Test-Path -LiteralPath $existingServer) { [IO.File]::WriteAllBytes($existingServer, $bytes) }
         Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture
-        $x11 = Join-Path $fixtureRoot 'x11\yserver'
+        $x11 = Join-Path $fixtureRoot 'x11\vcxsrv'
         New-Item -ItemType Directory -Force -Path $x11 | Out-Null
-        $server = Join-Path $x11 'yserver.exe'
+        $server = Join-Path $x11 'vcxsrv.exe'
         [IO.File]::WriteAllBytes($server, $bytes)
         Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture
         $invalidServer = $bytes.Clone()
@@ -27,7 +27,7 @@ try {
         [IO.File]::WriteAllBytes($server, $invalidServer)
         $rejected = $false
         try { Assert-WindowsPackageArchitecture -Root $fixtureRoot -Architecture $architecture } catch {
-            $rejected = $_.Exception.Message -match 'yserver.exe'
+            $rejected = $_.Exception.Message -match 'vcxsrv\.exe'
         }
         if (-not $rejected) { throw 'Mismatched optional X display was accepted' }
         [IO.File]::WriteAllBytes($server, $bytes)

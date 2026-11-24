@@ -101,7 +101,7 @@ if ($missing.Count -ne 0) {
 
 $packagedExe = Join-Path $targetRoot 'pebrel.exe'
 . (Join-Path $PSScriptRoot 'windows-package-architecture.ps1')
-Assert-WindowsPackageArchitecture -Root $targetRoot -Architecture $Architecture -X11Directory (Join-Path $repo 'packaging\windows\x11')
+Assert-WindowsPackageArchitecture -Root $targetRoot -Architecture $Architecture -X11Directory (Join-Path $repo 'packaging\windows\x11\vcxsrv')
 if ($PackageBrand -eq 'Pebrel' -and (Get-Item -LiteralPath $packagedExe).VersionInfo.ProductName -ne 'Pebrel') {
     throw 'Pebrel packages require a freshly built Pebrel executable, not renamed Nebula binaries.'
 }

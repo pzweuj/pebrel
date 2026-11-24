@@ -5,7 +5,7 @@ use super::*;
 #[ignore = "launches VcXsrv; set PEBREL_VCXSRV_TEST_EXE"]
 fn real_vcxsrv_authenticates_and_round_trips_image_pixels() {
     let executable = std::env::var_os("PEBREL_VCXSRV_TEST_EXE").expect("explicit test runtime");
-    let display = start_server(Backend::Vcxsrv, Path::new(&executable)).unwrap();
+    let display = start_server(Path::new(&executable)).unwrap();
     let DisplayTarget::Tcp { port, .. } = display.target else { panic!("TCP display") };
     struct Owner(Option<Running>);
     impl Drop for Owner {

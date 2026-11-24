@@ -271,6 +271,7 @@ impl Render for NebulaWorkspace {
             .child(
                 self.render_window_title_bar(
                     settings_active,
+                    content_background,
                     window,
                     cx,
                 ),

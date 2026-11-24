@@ -43,7 +43,6 @@ fn native_startup_has_no_visible_console_windows() {
         .env("CODEX_HOME", &codex)
         .env("TEMP", &temporary)
         .env("TMP", &temporary)
-        .env("PEBREL_X11_BACKEND", "vcxsrv")
         .stdin(Stdio::null())
         .stdout(output.try_clone().unwrap())
         .stderr(output);
@@ -89,7 +88,7 @@ fn native_startup_has_no_visible_console_windows() {
         eprintln!("Startup diagnostics retained at {}", root.keep().display());
     }
     assert!(flashes.is_empty(), "visible descendant console windows: {flashes:?}");
-    assert!(vcxsrv_running, "VcXsrv must remain running; fallback cannot hide a broken launch");
+    assert!(vcxsrv_running, "VcXsrv must remain running");
     assert!(
         !final_processes
             .iter()

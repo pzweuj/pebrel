@@ -1,9 +1,9 @@
 ﻿#ifndef AppVersion
-  #define AppVersion "2.6.5"
+  #define AppVersion "2.6.6"
 #endif
 
 #ifndef NumericVersion
-  #define NumericVersion "2.6.5.0"
+  #define NumericVersion "2.6.6.0"
 #endif
 
 #ifndef Configuration
@@ -127,9 +127,9 @@ Source: "{#RepoRoot}\README.zh-CN.md"; DestDir: "{app}"; Flags: ignoreversion
 Source: "{#BuildRoot}\pebrel-hook.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#BuildRoot}\conpty.dll"; DestDir: "{app}\runtime"; Flags: ignoreversion
 Source: "{#BuildRoot}\OpenConsole.exe"; DestDir: "{app}\runtime"; Flags: ignoreversion
-; Optional X displays, including yserver's xkb data and dependency licenses.
-#if DirExists(RepoRoot + "\packaging\windows\x11")
-Source: "{#RepoRoot}\packaging\windows\x11\*"; DestDir: "{app}\x11"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
+; VcXsrv and its fonts, keyboard data and licenses.
+#if DirExists(RepoRoot + "\packaging\windows\x11\vcxsrv")
+Source: "{#RepoRoot}\packaging\windows\x11\vcxsrv\*"; DestDir: "{app}\x11\vcxsrv"; Flags: ignoreversion recursesubdirs createallsubdirs skipifsourcedoesntexist
 #endif
 Source: "{#RepoRoot}\assets\fonts\MapleMonoNormal-NF-CN-Regular.ttf"; DestDir: "{app}\fonts"; Flags: ignoreversion
 #ifndef AcceptanceFixture

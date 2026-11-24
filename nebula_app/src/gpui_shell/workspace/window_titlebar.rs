@@ -37,7 +37,7 @@ impl TitleBarBackground {
         self.left_drawer.set(Some(bounds));
     }
 
-    fn element(&self, top_tabs: bool) -> gpui::Canvas<()> {
+    fn element(&self) -> gpui::Canvas<()> {
         let pane_bounds = self.pane.clone();
         let left_drawer_bounds = self.left_drawer.clone();
         canvas(
@@ -46,10 +46,6 @@ impl TitleBarBackground {
                 let card = crate::gpui_shell::theme::PaneCardStyle::current(cx);
                 let shell = cx.theme().background;
                 let tabs = crate::gpui_shell::theme::tab_bar_background(cx);
-                if top_tabs && crate::gpui_shell::wallpaper::tab_bar_material_is_custom(cx) {
-                    window.paint_quad(fill(bounds, tabs));
-                    return;
-                }
                 let Some(pane) = pane_bounds.get() else {
                     window.paint_quad(fill(bounds, shell));
                     return;
@@ -163,6 +159,7 @@ impl NebulaWorkspace {
     pub(super) fn render_window_title_bar(
         &self,
         settings_active: bool,
+        content_background: gpui::Hsla,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::Div {
@@ -182,7 +179,16 @@ impl NebulaWorkspace {
                 }
             }))
             .h(px(title_bar_height))
-            .when(!settings_active, |bar| {
+            .when(top_tabs, |bar| {
+                // The selected tab exposes this single fill. Painting its own
+                // translucent background on top would apply the opacity twice.
+                let mut fill = content_background;
+                if crate::gpui_shell::wallpaper::tab_bar_material_is_custom(cx) {
+                    fill.a = crate::gpui_shell::wallpaper::tab_bar_surface_opacity(cx);
+                }
+                bar.bg(fill).border_b_0()
+            })
+            .when(!top_tabs && !settings_active, |bar| {
                 // Explicit tab surfaces are painted once by TitleBarBackground.
                 // Keep the pre-existing native-wallpaper path for inherited mode.
                 let fill = if crate::gpui_shell::wallpaper::native_underlay_active(cx)
@@ -194,7 +200,7 @@ impl NebulaWorkspace {
                 };
                 bar.bg(fill).border_b_0()
             })
-            .when(settings_active, |bar| {
+            .when(!top_tabs && settings_active, |bar| {
                 bar.border_b_1().border_color(crate::gpui_shell::theme::settings_hairline(cx))
             })
             .when(top_tabs && native_layout.is_none(), |bar| {
@@ -218,7 +224,9 @@ impl NebulaWorkspace {
 
         title_bar_frame()
             .debug_selector(|| "workspace-titlebar".to_owned())
-            .when(!settings_active, |title| title.child(self.titlebar_background.element(top_tabs)))
+            .when(!top_tabs && !settings_active, |title| {
+                title.child(self.titlebar_background.element())
+            })
             .child(bar)
     }
 }
