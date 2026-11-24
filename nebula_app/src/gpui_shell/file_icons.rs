@@ -33,6 +33,7 @@ pub(super) const ASSETS: &[(&str, &[u8])] = assets![
     "python",
     "rust",
     "settings",
+    "table",
     "toml",
     "typescript",
     "xml",
@@ -71,6 +72,9 @@ pub(super) fn path(name: &str, kind: SftpEntryKind) -> &'static str {
             "ps1" | "psm1" | "psd1" => "powershell",
             "sql" | "db" | "sqlite" | "csv" | "tsv" | "bam" | "bai" | "sam" | "vcf" | "bcf" => {
                 "database"
+            },
+            "xls" | "xlsx" | "xlsm" | "xlsb" | "xlt" | "xltx" | "xltm" | "ods" | "numbers" => {
+                "table"
             },
             "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "ico" | "svg" => "image",
             "zip" | "7z" | "rar" | "gz" | "tar" | "xz" | "zst" | "bz2" | "tgz" => "zip",
@@ -122,6 +126,12 @@ mod tests {
             ("Dockerfile", "docker"),
             (".gitignore", "git"),
             ("reads.bam", "database"),
+            ("budget.xlsx", "table"),
+            ("legacy.XLS", "table"),
+            ("macros.xlsm", "table"),
+            ("binary.xlsb", "table"),
+            ("sheet.ods", "table"),
+            ("report.docx", "document"),
             ("archive.tar.gz", "zip"),
             ("unknown", "document"),
         ] {
@@ -153,5 +163,28 @@ mod tests {
                 .chunks_exact(4)
                 .any(|p| p[3] > 200 && p[0] > 180 && p[1] > 120 && p[2] < 100)
         );
+    }
+
+    #[test]
+    fn material_spreadsheet_asset_rasterizes_in_green() {
+        for name in ["report.xlsx", "legacy.xls", "sheet.ods"] {
+            let bytes = super::super::assets::NebulaAssets
+                .load(path(name, SftpEntryKind::File))
+                .unwrap()
+                .unwrap();
+            let tree = resvg::usvg::Tree::from_data(&bytes, &Default::default()).unwrap();
+            let mut pixels = resvg::tiny_skia::Pixmap::new(24, 24).unwrap();
+            resvg::render(&tree, resvg::tiny_skia::Transform::identity(), &mut pixels.as_mut());
+            assert!(
+                pixels.data().chunks_exact(4).any(|p| {
+                    p[3] > 200 && p[1] > p[0].saturating_add(40) && p[1] > p[2].saturating_add(40)
+                }),
+                "{name} should render with green pixels",
+            );
+            assert!(
+                !pixels.data().chunks_exact(4).any(|p| p[3] > 200 && p[2] > p[1] && p[2] > p[0]),
+                "{name} must not render as blue",
+            );
+        }
     }
 }

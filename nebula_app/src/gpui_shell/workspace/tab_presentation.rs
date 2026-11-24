@@ -24,6 +24,8 @@ pub(super) struct TabMeta {
     pub(super) launch: Option<crate::session::LaunchSession>,
     /// 后台 tab 响过 BEL（旧壳 `has_bell`）。激活即清。
     pub(super) has_bell: bool,
+    /// 后台 tab 产生了新的未读输出。激活或可见即清。
+    pub(super) has_unread: bool,
 }
 
 /// 两种 tab 布局共用的只读展示数据。状态与动作仍由 `NebulaWorkspace`
@@ -33,6 +35,7 @@ pub(super) struct TabPresentation {
     pub(super) tooltip: Option<SharedString>,
     pub(super) is_settings: bool,
     pub(super) activity: SidebarActivity,
+    pub(super) has_unread: bool,
     pub(super) logo_image: Option<Arc<RenderImage>>,
     pub(super) logo_pending: bool,
     pub(super) program_glyph: Option<&'static str>,
@@ -122,11 +125,19 @@ impl NebulaWorkspace {
                 _ => None,
             });
         let meta = self.meta(ix);
+        let viewing_tab = active && !self.settings_open;
+        let has_unread = !viewing_tab
+            && (meta.has_unread
+                || meta.has_bell
+                || matches!(activity, SidebarActivity::Done | SidebarActivity::Completed));
         // 分屏 tab 不画 shell 短标：一个 tab 里的 N 个 pane 完全可能跑着不同
         // 的 shell，只贴其中一个（聚焦那个）是误导；数量胶囊「这是一组」才是
         // 此时该占这个槽位的信息。顺带把 28px 让回标题——顶栏挤到 120px 时，
         // 图标+胶囊+短标三样一起上，标题只剩两三个字符。
-        let shell_tag = (is_terminal && activity == SidebarActivity::Idle && pane_count <= 1)
+        let shell_tag = (is_terminal
+            && matches!(activity, SidebarActivity::Idle | SidebarActivity::Running)
+            && !has_unread
+            && pane_count <= 1)
             .then_some(meta.shell_tag.clone())
             .flatten()
             .filter(|tag| !tag.is_empty());
@@ -142,6 +153,7 @@ impl NebulaWorkspace {
             tooltip,
             is_settings,
             activity,
+            has_unread,
             logo_image,
             logo_pending,
             program_glyph,

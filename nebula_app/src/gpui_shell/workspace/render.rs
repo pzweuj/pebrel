@@ -37,6 +37,7 @@ impl Render for NebulaWorkspace {
         if !self.sidebar_collapsed {
             self.sidebar_closing_width = None;
         }
+        let embedded_shell_picker = self.embedded_shell_picker_active();
         let content: Option<gpui::AnyElement> = if self.settings_open {
             self.settings_surface
                 .as_ref()
@@ -57,6 +58,9 @@ impl Render for NebulaWorkspace {
                 },
                 Some(WorkspaceTab::Code { view, .. }) => {
                     Some(gpui::IntoElement::into_any_element(view.clone()))
+                },
+                None if embedded_shell_picker => {
+                    Some(self.render_embedded_shell_palette(window, cx))
                 },
                 None => None,
             }
@@ -455,7 +459,7 @@ impl Render for NebulaWorkspace {
                     )
                 },
             )
-            .when(self.command_palette_open, |root| {
+            .when(self.command_palette_open && !embedded_shell_picker, |root| {
                 root.child(self.render_command_palette(window, cx))
             })
             .when(self.command_manager_open, |root| {

@@ -162,6 +162,18 @@ impl NebulaWorkspace {
                     cx.notify();
                 }
             },
+            TerminalViewEvent::UnreadOutput => {
+                if let Some((tab_ix, _)) = self.locate_pane(view.entity_id())
+                    && (tab_ix != self.active || self.settings_open)
+                {
+                    if let Some(meta) = self.tab_meta.get_mut(tab_ix)
+                        && !meta.has_unread
+                    {
+                        meta.has_unread = true;
+                        cx.notify();
+                    }
+                }
+            },
             // 视图无条件上报用户输入，宿主在事件发生时检查广播开关并扇出。
             TerminalViewEvent::UserInput(input) => {
                 if let Some((_, pane_id)) = self.locate_pane(view.entity_id()) {
@@ -212,7 +224,13 @@ impl NebulaWorkspace {
         }
     }
 
-    pub(super) fn sync_terminal_activity(&self, cx: &mut Context<Self>) {
+    pub(super) fn sync_terminal_activity(&mut self, cx: &mut Context<Self>) {
+        if !self.settings_open
+            && !self.window_hidden
+            && let Some(meta) = self.tab_meta.get_mut(self.active)
+        {
+            meta.has_unread = false;
+        }
         for (index, tab) in self.tabs.iter().enumerate() {
             let WorkspaceTab::Terminal { panes, tree, zoomed, .. } = tab else { continue };
             let active = index == self.active && !self.settings_open && !self.window_hidden;
@@ -352,26 +370,19 @@ mod tests {
         (workspace.unwrap(), terminals, receivers, window)
     }
 
-    fn assert_spinner_reuses_terminal_paint(
+    fn assert_workspace_redraw_reuses_terminal_paint(
         workspace: &Entity<NebulaWorkspace>,
         terminals: &[Entity<TerminalView>],
         cx: &mut VisualTestContext,
     ) {
         let before: Vec<_> = terminals.iter().map(|terminal| painted(terminal, cx).count).collect();
-        let phase = workspace.read_with(cx, |workspace, _| {
-            assert!(workspace.spinner_visible.get(), "a real running badge must be painted");
-            workspace.spinner_phase
+        workspace.update(cx, |workspace, cx| {
+            assert!(!workspace.spinner_visible.get(), "running tabs must not paint a spinner");
+            cx.notify();
         });
-        for _ in 0..8 {
-            cx.executor().advance_clock(Duration::from_millis(16));
-            cx.update(|window, cx| {
-                assert!(window.simulate_next_frame(cx) > 0);
-            });
-            draw(cx);
-        }
-        assert_ne!(workspace.read_with(cx, |workspace, _| workspace.spinner_phase), phase);
+        draw(cx);
         let after: Vec<_> = terminals.iter().map(|terminal| painted(terminal, cx).count).collect();
-        assert_eq!(after, before, "spinner frames must reuse actual terminal paint");
+        assert_eq!(after, before, "workspace-only redraws must reuse actual terminal paint");
     }
 
     fn spinner_tick(cx: &mut VisualTestContext) -> usize {
@@ -382,37 +393,14 @@ mod tests {
     }
 
     #[track_caller]
-    fn assert_spinner_running(workspace: &Entity<NebulaWorkspace>, cx: &mut VisualTestContext) {
-        let phase = workspace.read_with(cx, |workspace, _| {
-            assert!(workspace.spinner_visible.get());
-            workspace.spinner_phase
-        });
-        assert_eq!(spinner_tick(cx), 1, "visible badges share one workspace frame callback");
-        assert_ne!(workspace.read_with(cx, |workspace, _| workspace.spinner_phase), phase);
-        assert_eq!(spinner_tick(cx), 1, "actual paint must renew frame demand");
-    }
-
-    #[track_caller]
     fn assert_spinner_stopped(workspace: &Entity<NebulaWorkspace>, cx: &mut VisualTestContext) {
         let phase = workspace.read_with(cx, |workspace, _| {
             assert!(!workspace.spinner_visible.get());
             workspace.spinner_phase
         });
-        // The last visible paint may already have queued one callback. It must
-        // expire without advancing phase or renewing itself after the hide.
         assert!(spinner_tick(cx) <= 1);
         assert_eq!(workspace.read_with(cx, |workspace, _| workspace.spinner_phase), phase);
-        assert_eq!(spinner_tick(cx), 0, "hidden badges must leave no frame demand");
-    }
-
-    fn click_tabs_toggle(cx: &mut VisualTestContext) {
-        let position = cx.debug_bounds("sidebar-tabs-toggle").unwrap().center();
-        cx.simulate_mouse_down(position, MouseButton::Left, Modifiers::default());
-        cx.simulate_mouse_up(position, MouseButton::Left, Modifiers::default());
-        draw(cx);
-        cx.executor().advance_clock(Duration::from_millis(250));
-        cx.run_until_parked();
-        draw(cx);
+        assert_eq!(spinner_tick(cx), 0, "tab bar must not paint a spinner or schedule frames");
     }
 
     fn scroll_top_tabs(
@@ -431,99 +419,40 @@ mod tests {
     }
 
     #[gpui::test]
-    fn spinner_frames_reuse_single_terminal_snapshot(cx: &mut TestAppContext) {
+    fn running_tabs_paint_no_spinner_and_reuse_terminal_snapshots(cx: &mut TestAppContext) {
         let (workspace, terminals, _receivers, mut window) = open_painted_workspace(&[1], cx);
-        assert_spinner_reuses_terminal_paint(&workspace, &terminals, &mut window);
+        assert_spinner_stopped(&workspace, &mut window);
+        assert_workspace_redraw_reuses_terminal_paint(&workspace, &terminals, &mut window);
+
+        // Split and zoomed panes also paint no spinner and reuse cached terminal paint.
+        let (split_ws, split_terminals, _receivers, mut split_window) =
+            open_painted_workspace(&[2], cx);
+        assert_spinner_stopped(&split_ws, &mut split_window);
+        assert_workspace_redraw_reuses_terminal_paint(
+            &split_ws,
+            &split_terminals,
+            &mut split_window,
+        );
+        let split_grid = painted(&split_terminals[0], &mut split_window).grid;
+        split_ws.update(&mut split_window, |workspace, cx| {
+            let WorkspaceTab::Terminal { zoomed, .. } = &mut workspace.tabs[0] else {
+                unreachable!();
+            };
+            *zoomed = true;
+            cx.notify();
+        });
+        draw(&mut split_window);
+        assert!(painted(&split_terminals[0], &mut split_window).grid.1 > split_grid.1);
+        assert_workspace_redraw_reuses_terminal_paint(
+            &split_ws,
+            &split_terminals,
+            &mut split_window,
+        );
     }
 
     #[gpui::test]
-    fn sidebar_spinner_follows_real_collapse_and_window_focus(cx: &mut TestAppContext) {
-        let (workspace, _terminals, _receivers, mut window) = open_painted_workspace(&[1], cx);
-        assert_spinner_running(&workspace, &mut window);
-        let row = window.debug_bounds("sidebar-tab-0").unwrap();
-        window.simulate_mouse_move(row.center(), None, Modifiers::default());
-        draw(&mut window);
-        assert_spinner_stopped(&workspace, &mut window);
-        window.simulate_mouse_move(point(px(800.0), px(600.0)), None, Modifiers::default());
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
-
-        click_tabs_toggle(&mut window);
-        assert!(workspace.read_with(&window, |workspace, _| workspace.tabs_section_collapsed));
-        assert_spinner_stopped(&workspace, &mut window);
-        click_tabs_toggle(&mut window);
-        assert!(!workspace.read_with(&window, |workspace, _| workspace.tabs_section_collapsed));
-        assert_spinner_running(&workspace, &mut window);
-
-        window.dispatch_action(ToggleSidebar);
-        draw(&mut window);
-        assert!(workspace.read_with(&window, |workspace, _| workspace.sidebar_collapsed));
-        assert_spinner_stopped(&workspace, &mut window);
-        window.dispatch_action(ToggleSidebar);
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
-
-        window.update(|window, _| assert!(window.is_window_active()));
-        window.deactivate_window();
-        draw(&mut window);
-        assert!(!workspace.read_with(&window, |workspace, _| workspace.spinner_window_active));
-        assert_spinner_running(&workspace, &mut window);
-    }
-
-    #[gpui::test]
-    fn fullscreen_tui_paints_no_spinner_until_it_leaves_the_alternate_screen(
-        cx: &mut TestAppContext,
-    ) {
-        let (workspace, terminals, _receivers, mut window) = open_painted_workspace(&[1], cx);
-        assert_spinner_running(&workspace, &mut window);
-        // A full-screen TUI waits for the user (#805): no badge and no frame demand.
-        terminals[0].update(&mut window, |view, cx| {
-            feed(view, b"\x1b[?1049h");
-            cx.notify();
-        });
-        draw(&mut window);
-        assert_spinner_stopped(&workspace, &mut window);
-        terminals[0].update(&mut window, |view, cx| {
-            feed(view, b"\x1b[?1049l");
-            cx.notify();
-        });
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
-    }
-
-    #[gpui::test]
-    fn interactive_ssh_paints_no_spinner_or_repeated_frame_demand(cx: &mut TestAppContext) {
-        let (workspace, terminals, _receivers, mut window) = open_painted_workspace(&[1], cx);
-        assert_spinner_running(&workspace, &mut window);
-        // 主屏上的交互式 SSH 登录在等人操作远端 shell（#857）：不画 badge，也不续帧。
-        terminals[0].update(&mut window, |view, cx| {
-            view.runtime_run("ssh user@example.test".into(), cx).unwrap();
-            view.running_program = Some("ssh".into());
-            assert_eq!(view.runtime_task_state(), crate::runtime_api::RuntimeTaskState::Running);
-            cx.notify();
-        });
-        draw(&mut window);
-        assert_spinner_stopped(&workspace, &mut window);
-        terminals[0].update(&mut window, |view, cx| {
-            view.running_program = Some("make".into());
-            cx.notify();
-        });
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
-    }
-
-    #[gpui::test]
-    fn top_tab_spinners_share_frames_and_stop_when_running_tab_scrolls_out(
-        cx: &mut TestAppContext,
-    ) {
-        let (workspace, terminals, _receivers, mut window) = open_painted_workspace(&[1; 10], cx);
-        for terminal in &terminals {
-            terminal.update(&mut window, |view, cx| {
-                view.running_program = None;
-                cx.notify();
-            });
-        }
-        draw(&mut window);
+    fn top_tabs_scroll_and_reveal_without_painting_spinners(cx: &mut TestAppContext) {
+        let (workspace, _terminals, _receivers, mut window) = open_painted_workspace(&[1; 10], cx);
         assert_spinner_stopped(&workspace, &mut window);
         workspace.update(&mut window, |workspace, cx| {
             workspace.tabs_position = nebula_settings::TabsPositionName::Top;
@@ -531,36 +460,15 @@ mod tests {
         });
         draw(&mut window);
         draw(&mut window);
-        // GPUI's top-menu Popover requests one frame after first capturing its
-        // trigger bounds. Isolate that mount callback with every tab idle.
-        assert_eq!(spinner_tick(&mut window), 1, "popover captures its initial bounds once");
-        assert_eq!(spinner_tick(&mut window), 0, "settled idle top tabs request no frames");
-        for terminal in &terminals {
-            terminal.update(&mut window, |view, cx| {
-                view.running_program = Some("cache-fixture-command".into());
-                cx.notify();
-            });
-        }
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
-        for terminal in terminals.iter().skip(1) {
-            terminal.update(&mut window, |view, cx| {
-                view.running_program = None;
-                cx.notify();
-            });
-        }
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
-        let first = window.debug_bounds("top-tab-0").unwrap();
-        window.simulate_mouse_move(first.center(), None, Modifiers::default());
-        draw(&mut window);
+        assert!(spinner_tick(&mut window) <= 1, "popover captures its initial bounds at most once");
+        assert_eq!(
+            spinner_tick(&mut window),
+            0,
+            "running top tabs must not schedule spinner frames"
+        );
         assert_spinner_stopped(&workspace, &mut window);
-        window.simulate_mouse_move(point(px(1200.0), px(850.0)), None, Modifiers::default());
-        draw(&mut window);
-        assert_spinner_running(&workspace, &mut window);
 
-        // Wheel over a real tab, including vertical mouse-wheel input. Each
-        // event is applied once by GPUI, without another workspace delta.
+        let first = window.debug_bounds("top-tab-0").unwrap();
         for delta in [point(px(-40.0), px(0.0)), point(px(0.0), px(-40.0))] {
             scroll_top_tabs(first.center(), delta, &mut window);
             assert_eq!(
@@ -574,19 +482,6 @@ mod tests {
                 px(0.0)
             );
         }
-        assert_spinner_running(&workspace, &mut window);
-        scroll_top_tabs(first.center(), point(px(-3000.0), px(0.0)), &mut window);
-        assert!(workspace.read_with(&window, |workspace, _| {
-            workspace.top_tabs_scroll.offset().x < -first.size.width
-        }));
-        assert_spinner_stopped(&workspace, &mut window);
-        let last = window.debug_bounds("top-tab-9").unwrap();
-        scroll_top_tabs(last.center(), point(px(3000.0), px(0.0)), &mut window);
-        assert_eq!(
-            workspace.read_with(&window, |workspace, _| workspace.top_tabs_scroll.offset().x),
-            px(0.0)
-        );
-        assert_spinner_running(&workspace, &mut window);
 
         // Keyboard activation must still reveal the actual indexed child in
         // ScrollHandle, including the last tab followed by the first tab.
@@ -600,7 +495,6 @@ mod tests {
         let viewport =
             workspace.read_with(&window, |workspace, _| workspace.top_tabs_scroll.bounds());
         assert_eq!(last.intersect(&viewport), last, "activated last tab must be fully visible");
-        assert_spinner_stopped(&workspace, &mut window);
         window.simulate_keystrokes("ctrl-tab");
         draw(&mut window);
         workspace.read_with(&window, |workspace, _| {
@@ -609,24 +503,178 @@ mod tests {
         });
         let first = window.debug_bounds("top-tab-0").unwrap();
         assert_eq!(first.intersect(&viewport), first, "activated first tab must be fully visible");
-        assert_spinner_running(&workspace, &mut window);
+        assert_spinner_stopped(&workspace, &mut window);
     }
 
     #[gpui::test]
-    fn spinner_frames_reuse_split_and_zoomed_terminal_snapshots(cx: &mut TestAppContext) {
-        let (workspace, terminals, _receivers, mut window) = open_painted_workspace(&[2], cx);
-        assert_spinner_reuses_terminal_paint(&workspace, &terminals, &mut window);
-        let split_grid = painted(&terminals[0], &mut window).grid;
+    fn background_output_highlights_unread_tab_in_sidebar_and_top_tabs_until_viewed(
+        cx: &mut TestAppContext,
+    ) {
+        let (workspace, terminals, _receivers, mut window) = open_painted_workspace(&[1, 1], cx);
         workspace.update(&mut window, |workspace, cx| {
-            let WorkspaceTab::Terminal { zoomed, .. } = &mut workspace.tabs[0] else {
-                unreachable!();
-            };
-            *zoomed = true;
+            workspace.tabs_position = nebula_settings::TabsPositionName::Sidebar;
             cx.notify();
         });
         draw(&mut window);
-        assert!(painted(&terminals[0], &mut window).grid.1 > split_grid.1);
-        assert_spinner_reuses_terminal_paint(&workspace, &terminals, &mut window);
+        assert!(window.debug_bounds("sidebar-tab-unread-0").is_none());
+        assert!(window.debug_bounds("sidebar-tab-unread-1").is_none());
+
+        // Active tab output must never mark itself unread.
+        terminals[0].update(&mut window, |view, cx| {
+            feed(view, b"\r\nactive-output");
+            view.remote_files_test_event(Event::Wakeup, cx);
+        });
+        draw(&mut window);
+        assert!(workspace.read_with(&window, |workspace, _| !workspace.tab_meta[0].has_unread));
+        assert!(window.debug_bounds("sidebar-tab-unread-0").is_none());
+
+        // Background tab output highlights the tab in sidebar mode.
+        terminals[1].update(&mut window, |view, cx| {
+            feed(view, b"\r\nbackground-line-1");
+            view.remote_files_test_event(Event::Wakeup, cx);
+            feed(view, b"\r\nbackground-line-2");
+            view.remote_files_test_event(Event::Wakeup, cx);
+        });
+        draw(&mut window);
+        assert!(workspace.read_with(&window, |workspace, _| workspace.tab_meta[1].has_unread));
+        assert!(window.debug_bounds("sidebar-tab-unread-1").is_some());
+        assert!(window.debug_bounds("sidebar-tab-unread-dot-1").is_some());
+
+        // Switching to top-tab layout carries the same unread highlight.
+        workspace.update(&mut window, |workspace, cx| {
+            workspace.tabs_position = nebula_settings::TabsPositionName::Top;
+            cx.notify();
+        });
+        draw(&mut window);
+        assert!(window.debug_bounds("top-tab-unread-1").is_some());
+        assert!(window.debug_bounds("top-tab-unread-dot-1").is_some());
+
+        // Clicking the highlighted tab clears unread immediately.
+        let second_tab = window.debug_bounds("top-tab-1").unwrap();
+        window.simulate_click(second_tab.center(), Modifiers::default());
+        draw(&mut window);
+        assert!(workspace.read_with(&window, |workspace, _| {
+            workspace.active == 1 && !workspace.tab_meta[1].has_unread
+        }));
+        assert!(window.debug_bounds("top-tab-unread-1").is_none());
+        assert!(window.debug_bounds("top-tab-unread-dot-1").is_none());
+
+        // Output produced while Settings covers the active tab highlights it until Settings closes.
+        window.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.open_settings(window, cx));
+        });
+        draw(&mut window);
+        terminals[1].update(&mut window, |view, cx| {
+            feed(view, b"\r\noutput-while-in-settings");
+            view.remote_files_test_event(Event::Wakeup, cx);
+        });
+        draw(&mut window);
+        assert!(workspace.read_with(&window, |workspace, _| workspace.tab_meta[1].has_unread));
+        assert!(window.debug_bounds("top-tab-unread-1").is_some());
+
+        window.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.close_settings(window, cx));
+        });
+        draw(&mut window);
+        assert!(workspace.read_with(&window, |workspace, _| !workspace.tab_meta[1].has_unread));
+        assert!(window.debug_bounds("top-tab-unread-1").is_none());
+    }
+
+    #[gpui::test]
+    fn cold_startup_opens_embedded_shell_connector_instead_of_default_shell(
+        cx: &mut TestAppContext,
+    ) {
+        use crate::gpui_shell::settings_fixture::{SettingsBytesGuard, lock_theme_studio};
+
+        let _lock = lock_theme_studio();
+        let _settings_guard = SettingsBytesGuard::capture();
+        nebula_settings::persist_keys(&[("restore_session", "0".into())])
+            .expect("disable session restore for cold-start test");
+        cx.update(|cx| {
+            gpui_component::init(cx);
+            crate::gpui_shell::init(cx, Default::default());
+            windowing::initialize(cx, crate::runtime_api::RuntimeHub::new());
+            cx.set_reduce_motion(true);
+        });
+        let mut workspace = None;
+        let (_, window) = cx.add_window_view(|window, cx| {
+            let entity = cx.new(|cx| {
+                NebulaWorkspace::new(
+                    window,
+                    None,
+                    None,
+                    1,
+                    crate::runtime_api::RuntimeHub::new(),
+                    windowing::WorkspaceStartup::RestoreOrDefault,
+                    windowing::WindowRole::Regular,
+                    cx,
+                )
+            });
+            workspace = Some(entity.clone());
+            Root::new(entity, window, cx)
+        });
+        let workspace = workspace.unwrap();
+        let mut window = window.clone();
+        draw(&mut window);
+
+        workspace.read_with(&window, |workspace, _| {
+            assert!(workspace.tabs.is_empty(), "cold start must not spawn a default shell tab");
+            assert!(workspace.embedded_shell_picker_active());
+        });
+        assert!(window.debug_bounds("workspace-startup-connector").is_some());
+        assert!(window.debug_bounds("workspace-palette-search").is_some());
+
+        // Escape clears a typed query without dismissing the embedded startup connector.
+        window.update(|window, cx| {
+            let input = workspace.read(cx).command_palette_input.clone();
+            input.update(cx, |input, cx| input.set_value("ssh", window, cx));
+        });
+        draw(&mut window);
+        window.simulate_keystrokes("escape");
+        draw(&mut window);
+        workspace.read_with(&window, |workspace, cx| {
+            assert!(workspace.embedded_shell_picker_active());
+            assert!(workspace.command_palette_input.read(cx).value().is_empty());
+        });
+        assert!(window.debug_bounds("workspace-startup-connector").is_some());
+
+        // Opening Settings and closing it returns to the startup connector instead of closing the window.
+        window.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.open_settings(window, cx));
+        });
+        draw(&mut window);
+        assert!(window.debug_bounds("workspace-startup-connector").is_none());
+        window.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| workspace.close_settings(window, cx));
+        });
+        draw(&mut window);
+        workspace.read_with(&window, |workspace, _| {
+            assert!(workspace.embedded_shell_picker_active());
+        });
+        assert!(window.debug_bounds("workspace-startup-connector").is_some());
+
+        // Launching a session from the connector dismisses it and opens the tab.
+        window.update(|window, cx| {
+            workspace.update(cx, |workspace, cx| {
+                workspace.run_workspace_palette_action(
+                    WorkspacePaletteAction::LaunchShell(crate::shell_detect::DetectedShell {
+                        name: "Test Shell".into(),
+                        id: "test-shell".into(),
+                        program: "pebrel-test-missing-shell-executable".into(),
+                        args: Vec::new(),
+                    }),
+                    window,
+                    cx,
+                );
+            });
+        });
+        draw(&mut window);
+        workspace.read_with(&window, |workspace, _| {
+            assert_eq!(workspace.tabs.len(), 1);
+            assert!(!workspace.embedded_shell_picker_active());
+            assert!(!workspace.command_palette_open);
+        });
+        assert!(window.debug_bounds("workspace-startup-connector").is_none());
     }
 
     #[gpui::test]

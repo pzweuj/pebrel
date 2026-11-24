@@ -224,6 +224,8 @@ pub enum TerminalViewEvent {
     FontSizeChanged,
     /// BEL（`^G`）。后台 tab 记铃点；本 tab 的闪烁/声音由视图自己处理。
     Bell,
+    /// 后台 tab 产生了新的终端输出；只在从“已读”转为“未读”的上升沿触发一次。
+    UnreadOutput,
     /// 用户语义输入。宿主可按 tab 的广播状态扇出；接收 pane 必须重新编码，
     /// 不能复用发送方已经受终端 mode 影响的字节。
     UserInput(TerminalInput),
@@ -513,6 +515,8 @@ pub struct TerminalView {
     cursor_pane_focused: bool,
     /// Workspace presentation is independent of keyboard/window focus.
     output_visible: bool,
+    /// Hidden-output rising edge latch so background bursts emit `UnreadOutput` once.
+    unread_output: bool,
     /// 上一次输出驱动帧的时刻（[`Self::schedule_output_frame`] 的合并基准）。
     last_output_frame: Option<std::time::Instant>,
     /// 在途的输出尾帧定时器（间隔内批次的补帧）。
@@ -632,6 +636,9 @@ impl TerminalView {
 
             super::effects::visibility_changed(self, cx);
         }
+        if visible {
+            self.unread_output = false;
+        }
         if std::mem::replace(&mut self.output_visible, visible) != visible && visible {
             // Hidden output deliberately did not invalidate the cached view.
             // The workspace declares visibility during render, where GPUI can
@@ -674,6 +681,10 @@ impl TerminalView {
                 self.cursor_blink_last_activity = std::time::Instant::now();
                 if self.cursor_blink_paused {
                     self.restart_cursor_blink(cx);
+                }
+                if !self.output_visible && !self.unread_output {
+                    self.unread_output = true;
+                    cx.emit(TerminalViewEvent::UnreadOutput);
                 }
                 self.schedule_output_frame(cx);
             },

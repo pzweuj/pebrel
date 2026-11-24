@@ -17,6 +17,41 @@ fn shell_glyph_size() -> f32 {
 }
 
 impl NebulaWorkspace {
+    pub(super) fn embedded_shell_picker_active(&self) -> bool {
+        self.tabs.is_empty()
+            && !self.settings_open
+            && self.command_palette_open
+            && self.shell_picker_open
+    }
+
+    pub(super) fn close_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if !self.command_palette_open {
+            return;
+        }
+        if self.embedded_shell_picker_active() {
+            if !self.command_palette_input.read(cx).value().is_empty() {
+                self.command_palette_input.update(cx, |input, cx| {
+                    input.set_value(String::new(), window, cx);
+                });
+                self.command_palette_selected = 0;
+                self.command_palette_scroll.scroll_to_item(0);
+                cx.notify();
+            }
+            return;
+        }
+        self.dismiss_palette_state();
+        self.focus_active(window, cx);
+        cx.notify();
+    }
+
+    pub(super) fn toggle_shell_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if self.command_palette_open && self.shell_picker_open {
+            self.close_command_palette(window, cx);
+            return;
+        }
+        self.open_shell_palette(window, cx);
+    }
+
     pub(super) fn run_selected_palette_action(
         &mut self,
         window: &mut Window,
@@ -238,6 +273,90 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> gpui::AnyElement {
+        let overlay = cx.theme().overlay;
+        let panel = self.render_palette_card(false, window, cx);
+
+        div()
+            .absolute()
+            .inset_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .occlude()
+            .key_context(PALETTE_KEY_CONTEXT)
+            .bg(overlay)
+            .on_mouse_down(
+                MouseButton::Left,
+                cx.listener(|this, _, window, cx| {
+                    this.close_command_palette(window, cx);
+                }),
+            )
+            .on_key_down(cx.listener(|this: &mut Self, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "up" => {
+                        this.move_command_palette_selection(-1, cx);
+                        cx.stop_propagation();
+                    },
+                    "down" => {
+                        this.move_command_palette_selection(1, cx);
+                        cx.stop_propagation();
+                    },
+                    "escape" => {
+                        this.close_command_palette(window, cx);
+                        cx.stop_propagation();
+                    },
+                    _ => {},
+                }
+            }))
+            .child(panel)
+            .into_any_element()
+    }
+
+    /// Empty-workspace start screen: renders the same Ctrl+K launcher card
+    /// directly inside the main content surface without dimming the title bar
+    /// or blocking settings/sidebar controls.
+    pub(super) fn render_embedded_shell_palette(
+        &mut self,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::AnyElement {
+        let panel = self.render_palette_card(true, window, cx);
+        div()
+            .id("workspace-startup-connector")
+            .debug_selector(|| "workspace-startup-connector".to_owned())
+            .size_full()
+            .flex()
+            .items_center()
+            .justify_center()
+            .p_4()
+            .key_context(PALETTE_KEY_CONTEXT)
+            .on_key_down(cx.listener(|this: &mut Self, event: &KeyDownEvent, window, cx| {
+                match event.keystroke.key.as_str() {
+                    "up" => {
+                        this.move_command_palette_selection(-1, cx);
+                        cx.stop_propagation();
+                    },
+                    "down" => {
+                        this.move_command_palette_selection(1, cx);
+                        cx.stop_propagation();
+                    },
+                    "escape" => {
+                        this.close_command_palette(window, cx);
+                        cx.stop_propagation();
+                    },
+                    _ => {},
+                }
+            }))
+            .child(panel)
+            .into_any_element()
+    }
+
+    fn render_palette_card(
+        &mut self,
+        embedded: bool,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> gpui::Div {
         use crate::display::ui::tokens::{radius, space};
 
         let theme = cx.theme();
@@ -250,7 +369,6 @@ impl NebulaWorkspace {
         let border = theme.border;
         let foreground = theme.foreground;
         let muted = theme.muted_foreground;
-        let overlay = theme.overlay;
         let mono_family = theme.mono_font_family.clone();
         let language = crate::gpui_shell::config::ui_language(cx);
         let palette_filters = if self.shell_picker_open {
@@ -549,20 +667,22 @@ impl NebulaWorkspace {
                     .cleanable(true)
                     .text_size(px(15.0)),
             )
-            .child(
-                div()
-                    .flex_shrink_0()
-                    .px(px(6.0))
-                    .py(px(3.0))
-                    .rounded(px(5.0))
-                    .border_1()
-                    .border_color(border)
-                    .bg(surface_bg.opacity(0.45))
-                    .font_family(mono_family.clone())
-                    .text_size(px(11.0))
-                    .text_color(muted)
-                    .child("esc"),
-            )
+            .when(!embedded, |box_el| {
+                box_el.child(
+                    div()
+                        .flex_shrink_0()
+                        .px(px(6.0))
+                        .py(px(3.0))
+                        .rounded(px(5.0))
+                        .border_1()
+                        .border_color(border)
+                        .bg(surface_bg.opacity(0.45))
+                        .font_family(mono_family.clone())
+                        .text_size(px(11.0))
+                        .text_color(muted)
+                        .child("esc"),
+                )
+            })
             .child(underline);
 
         let filter_bar = palette_filters.map(|(selected_filter, counts)| {
@@ -644,61 +764,26 @@ impl NebulaWorkspace {
                 },
             );
 
-        div()
-            .absolute()
-            .inset_0()
-            .flex()
-            .items_center()
-            .justify_center()
+        v_flex()
+            .w(px(PALETTE_PANEL_WIDTH))
+            .max_w_full()
+            .h(px(PALETTE_PANEL_HEIGHT))
+            .max_h_full()
+            .rounded(px(16.0))
+            .border_1()
+            .border_color(border)
+            .bg(panel_bg)
+            .shadow_lg()
+            .overflow_hidden()
             .occlude()
-            .key_context(PALETTE_KEY_CONTEXT)
-            .bg(overlay)
             .on_mouse_down(
                 MouseButton::Left,
-                cx.listener(|this, _, window, cx| {
-                    this.close_command_palette(window, cx);
+                cx.listener(|_, _, _, cx| {
+                    cx.stop_propagation();
                 }),
             )
-            .on_key_down(cx.listener(|this: &mut Self, event: &KeyDownEvent, window, cx| {
-                match event.keystroke.key.as_str() {
-                    "up" => {
-                        this.move_command_palette_selection(-1, cx);
-                        cx.stop_propagation();
-                    },
-                    "down" => {
-                        this.move_command_palette_selection(1, cx);
-                        cx.stop_propagation();
-                    },
-                    "escape" => {
-                        this.close_command_palette(window, cx);
-                        cx.stop_propagation();
-                    },
-                    _ => {},
-                }
-            }))
-            .child(
-                v_flex()
-                    .w(px(PALETTE_PANEL_WIDTH))
-                    .max_w_full()
-                    .h(px(PALETTE_PANEL_HEIGHT))
-                    .max_h_full()
-                    .rounded(px(16.0))
-                    .border_1()
-                    .border_color(border)
-                    .bg(panel_bg)
-                    .shadow_lg()
-                    .overflow_hidden()
-                    .occlude()
-                    .on_mouse_down(
-                        MouseButton::Left,
-                        cx.listener(|_, _, _, cx| {
-                            cx.stop_propagation();
-                        }),
-                    )
-                    .child(search_box)
-                    .children(filter_bar)
-                    .child(results),
-            )
-            .into_any_element()
+            .child(search_box)
+            .children(filter_bar)
+            .child(results)
     }
 }

@@ -23,6 +23,11 @@ impl NebulaWorkspace {
             }
             return;
         }
+        if self.embedded_shell_picker_active() {
+            let focus = self.command_palette_input.read(cx).focus_handle(cx);
+            window.defer(cx, move |window, cx| window.focus(&focus, cx));
+            return;
+        }
         let focus = match self.tabs.get(self.active) {
             Some(tab @ WorkspaceTab::Terminal { .. }) => match tab.focused_view() {
                 Some(view) => view.read(cx).focus_handle(cx),
@@ -48,6 +53,7 @@ impl NebulaWorkspace {
             self.active = ix;
             if let Some(meta) = self.tab_meta.get_mut(ix) {
                 meta.has_bell = false;
+                meta.has_unread = false;
             }
             self.reveal_active_tab();
             self.focus_active(window, cx);

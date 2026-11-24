@@ -1278,6 +1278,8 @@ impl NebulaWorkspace {
         let language = crate::gpui_shell::config::ui_language(cx);
 
         let debug_row_id = format!("remote-row-{}", row.name);
+        let debug_bar_id = format!("remote-row-selected-bar-{}", row.name);
+        let row_style = selection::row_selection_style(theme, selected, focused);
         let item = h_flex()
             .id(group.clone())
             .debug_selector(move || debug_row_id.clone())
@@ -1290,11 +1292,24 @@ impl NebulaWorkspace {
             .gap(px(8.0))
             .rounded(px(6.0))
             .border_1()
-            .border_color(if focused { theme.ring.opacity(0.6) } else { gpui::transparent_black() })
+            .border_color(row_style.border)
             .when(selected, |item| {
-                item.bg(theme.tab_active)
+                item.bg(row_style.selected_bg)
+                    .hover(move |item| item.bg(row_style.selected_hover_bg))
                     .when(joined.0, |item| item.rounded_t(px(0.0)))
                     .when(joined.1, |item| item.rounded_b(px(0.0)))
+                    .child(
+                        div()
+                            .debug_selector(move || debug_bar_id.clone())
+                            .absolute()
+                            .left_0()
+                            .top(if joined.0 { px(0.0) } else { px(4.0) })
+                            .bottom(if joined.1 { px(0.0) } else { px(4.0) })
+                            .w(px(3.0))
+                            .when(!joined.0, |bar| bar.rounded_t(px(2.0)))
+                            .when(!joined.1, |bar| bar.rounded_b(px(2.0)))
+                            .bg(row_style.indicator),
+                    )
             })
             .when(!selected, |item| item.hover(|item| item.bg(theme.list_hover)))
             .child(crate::gpui_shell::file_icons::render(&row.name, row.kind))
@@ -1303,7 +1318,12 @@ impl NebulaWorkspace {
                     .flex_1()
                     .min_w_0()
                     .text_size(px(13.0))
-                    .text_color(theme.foreground)
+                    .font_weight(if selected {
+                        gpui::FontWeight::MEDIUM
+                    } else {
+                        gpui::FontWeight::NORMAL
+                    })
+                    .text_color(row_style.label)
                     .truncate()
                     .child(label),
             )
@@ -1311,7 +1331,7 @@ impl NebulaWorkspace {
                 div()
                     .text_xs()
                     .font_family(theme.mono_font_family.clone())
-                    .text_color(theme.muted_foreground)
+                    .text_color(row_style.size)
                     .flex_shrink_0()
                     .child(size),
             )
@@ -1325,12 +1345,19 @@ impl NebulaWorkspace {
                         .h(px(26.0))
                         .pl(px(8.0))
                         .bg(if selected {
-                            theme.tab_active
+                            row_style.selected_action_bg
                         } else {
                             theme.background.blend(theme.list_hover)
                         })
                         .invisible()
-                        .group_hover(group.clone(), |actions| actions.visible())
+                        .group_hover(group.clone(), move |actions| {
+                            let actions = actions.visible();
+                            if selected {
+                                actions.bg(row_style.selected_action_hover_bg)
+                            } else {
+                                actions
+                            }
+                        })
                         .when(focused, |actions| actions.visible())
                         .on_mouse_down(gpui::MouseButton::Left, |_, _, cx| cx.stop_propagation())
                         .on_key_down(|event, _, cx| {
@@ -1534,6 +1561,11 @@ impl NebulaWorkspace {
                 .flex_1()
                 .min_w_0()
                 .gap(px(2.0))
+                .on_mouse_down_out(cx.listener(|this, _, _, cx| {
+                    if this.remote_path.take().is_some() {
+                        cx.notify();
+                    }
+                }))
                 .on_action(|_: &gpui_component::input::Enter, _, cx| cx.stop_propagation())
                 .on_key_down(cx.listener(|this, event: &gpui::KeyDownEvent, window, cx| {
                     if event.keystroke.key.as_str() == "escape" {
@@ -1549,6 +1581,7 @@ impl NebulaWorkspace {
                 )
                 .child(
                     Button::new("remote-files-path-go")
+                        .debug_selector(|| "remote-files-path-go".to_owned())
                         .icon(IconName::Check)
                         .ghost()
                         .xsmall()

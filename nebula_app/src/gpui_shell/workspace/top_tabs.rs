@@ -200,6 +200,7 @@ impl NebulaWorkspace {
                     tooltip,
                     is_settings,
                     activity,
+                    has_unread,
                     logo_image,
                     logo_pending,
                     program_glyph,
@@ -211,7 +212,12 @@ impl NebulaWorkspace {
                 } = self.top_tab_presentation(ix, cx, dark);
                 let hover_group: SharedString = format!("top-tab-hover-{ix}").into();
                 let cross_window_drag = self.cross_window_drag_payload(ix, cx);
-                let status_color = if active { active_fg } else { muted };
+                let unread_bg = theme.primary.opacity(if dark { 0.22 } else { 0.18 });
+                let unread_hover_bg = theme.primary.opacity(if dark { 0.30 } else { 0.24 });
+                let status_color = if active || has_unread { active_fg } else { muted };
+                let shows_shell_tag =
+                    matches!(activity, SidebarActivity::Idle | SidebarActivity::Running)
+                        && !has_unread;
                 let status_width = Self::shell_status_width(
                     window,
                     shell_tag.as_ref(),
@@ -221,11 +227,6 @@ impl NebulaWorkspace {
                     tab_w * 0.4,
                 );
                 let resting_status: Option<gpui::AnyElement> = match activity {
-                    SidebarActivity::Running => {
-                        let (track, head) =
-                            crate::gpui_shell::theme::sidebar_spinner_colors(cx, active);
-                        Some(Self::spinner(self.spinner_phase, track, head, cx.weak_entity()).into_any_element())
-                    },
                     SidebarActivity::Paused => Some(
                         Icon::new(IconName::Pause)
                             .xsmall()
@@ -233,7 +234,12 @@ impl NebulaWorkspace {
                             .into_any_element(),
                     ),
                     SidebarActivity::Done => Some(
-                        div().size(px(6.0)).rounded_full().bg(theme.primary).into_any_element(),
+                        div()
+                            .debug_selector(move || format!("top-tab-unread-dot-{ix}"))
+                            .size(px(6.0))
+                            .rounded_full()
+                            .bg(theme.primary)
+                            .into_any_element(),
                     ),
                     SidebarActivity::Completed => Some(
                         Icon::new(IconName::Check)
@@ -261,7 +267,15 @@ impl NebulaWorkspace {
                             .text_color(theme.danger)
                             .into_any_element(),
                     ),
-                    SidebarActivity::Idle => shell_tag.map(|tag| {
+                    SidebarActivity::Idle | SidebarActivity::Running if has_unread => Some(
+                        div()
+                            .debug_selector(move || format!("top-tab-unread-dot-{ix}"))
+                            .size(px(6.0))
+                            .rounded_full()
+                            .bg(theme.primary)
+                            .into_any_element(),
+                    ),
+                    SidebarActivity::Idle | SidebarActivity::Running => shell_tag.map(|tag| {
                         Self::shell_status_label(
                             tag,
                             metadata_family.clone(),
@@ -315,10 +329,20 @@ impl NebulaWorkspace {
                     // 占住普通鼠标命中区，滚轮仍交给外层标签滚动容器。
                     .block_mouse_except_scroll()
                     .when(active, |item| item.bg(active_bg).text_color(active_fg))
-                    .when(!active && !dragged, |item| {
+                    .when(!active && has_unread && !dragged, |item| {
+                        item.bg(unread_bg)
+                            .text_color(active_fg)
+                            .hover(move |style| style.bg(unread_hover_bg))
+                    })
+                    .when(!active && has_unread && dragged, |item| {
+                        item.bg(unread_hover_bg).text_color(active_fg)
+                    })
+                    .when(!active && !has_unread && !dragged, |item| {
                         item.text_color(muted).hover(|style| style.bg(hover_bg))
                     })
-                    .when(!active && dragged, |item| item.text_color(muted).bg(hover_bg))
+                    .when(!active && !has_unread && dragged, |item| {
+                        item.text_color(muted).bg(hover_bg)
+                    })
                     .on_click(cx.listener(move |this, _, window, cx| {
                         cx.stop_propagation();
                         this.activate_top_tab(ix, window, cx);
@@ -377,6 +401,19 @@ impl NebulaWorkspace {
                                 .h(px(2.5))
                                 .rounded_full()
                                 .bg(color),
+                        )
+                    })
+                    .when(has_unread, |row| {
+                        row.child(
+                            div()
+                                .debug_selector(move || format!("top-tab-unread-{ix}"))
+                                .absolute()
+                                .left(px(6.0))
+                                .right(px(6.0))
+                                .top_0()
+                                .h(px(2.0))
+                                .rounded_full()
+                                .bg(theme.primary),
                         )
                     })
                     .when(local_administrator, |row| {
@@ -470,7 +507,11 @@ impl NebulaWorkspace {
                             .truncate()
                             .font_family(chrome_family.clone())
                             .text_size(px(label_px))
-                            .font_weight(FontWeight::NORMAL)
+                            .font_weight(if has_unread {
+                                FontWeight::MEDIUM
+                            } else {
+                                FontWeight::NORMAL
+                            })
                             .child(title)
                             .into_any_element(),
                     })
@@ -508,7 +549,7 @@ impl NebulaWorkspace {
                                         .justify_end()
                                         .items_center()
                                         .group_hover(hover_group.clone(), |item| item.invisible())
-                                        .child(if matches!(activity, SidebarActivity::Idle) {
+                                        .child(if shows_shell_tag {
                                             status
                                         } else {
                                             Self::tab_status_icon(status).into_any_element()

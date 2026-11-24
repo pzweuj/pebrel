@@ -411,6 +411,7 @@ impl TerminalView {
             cursor_window_active,
             cursor_pane_focused,
             output_visible: true,
+            unread_output: false,
             last_output_frame: None,
             output_trailing_frame: None,
             _cursor_blink_subscriptions: cursor_blink_subscriptions,

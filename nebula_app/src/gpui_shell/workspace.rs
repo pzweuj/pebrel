@@ -629,6 +629,7 @@ pub struct NebulaWorkspace {
     /// Sidebar state sampled on entry. `None` means top-tab mode, where there
     /// is no left rail to fold and the setting must remain untouched.
     settings_restore_sidebar_collapsed: Option<bool>,
+    settings_restore_shell_picker: bool,
     settings_restore_side_panel_open: bool,
     sidebar_collapsed: bool,
     /// 只折叠 TABS 分区，不影响整个左栏；与旧壳分区标题的 chevron 同义。
@@ -926,6 +927,7 @@ impl NebulaWorkspace {
             settings_tab_open: false,
             settings_open: false,
             settings_restore_sidebar_collapsed: None,
+            settings_restore_shell_picker: false,
             settings_restore_side_panel_open: false,
             sidebar_collapsed: false,
             tabs_section_collapsed: false,
@@ -1029,7 +1031,7 @@ impl NebulaWorkspace {
         match startup {
             windowing::WorkspaceStartup::RestoreUpdate(session) => {
                 if !this.restore_update_session(&session, runtime.resume_ai, window, cx) {
-                    this.add_terminal_at(Self::cold_start_cwd(), None, window, cx);
+                    this.open_shell_palette(window, cx);
                 }
             },
             windowing::WorkspaceStartup::RestoreOrDefault => {
@@ -1037,7 +1039,7 @@ impl NebulaWorkspace {
                 if !runtime.restore_session
                     || !this.try_restore_session(runtime.resume_ai, window, cx)
                 {
-                    this.add_terminal_at(Self::cold_start_cwd(), None, window, cx);
+                    this.open_shell_palette(window, cx);
                 }
             },
             windowing::WorkspaceStartup::NewTerminal { cwd } => {
@@ -1239,6 +1241,10 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> u64 {
+        self.settings_restore_shell_picker = false;
+        if self.shell_picker_open {
+            self.dismiss_palette_state();
+        }
         if self.settings_open {
             self.leave_settings(window, cx);
         }
@@ -1288,6 +1294,10 @@ impl NebulaWorkspace {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        self.settings_restore_shell_picker = false;
+        if self.shell_picker_open {
+            self.dismiss_palette_state();
+        }
         if self.settings_open {
             self.leave_settings(window, cx);
         }
@@ -1782,15 +1792,6 @@ impl NebulaWorkspace {
         self.quick_jump_filter = None;
     }
 
-    fn close_command_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if !self.command_palette_open {
-            return;
-        }
-        self.dismiss_palette_state();
-        self.focus_active(window, cx);
-        cx.notify();
-    }
-
     fn move_command_palette_selection(&mut self, delta: isize, cx: &mut Context<Self>) {
         if !self.command_palette_open {
             return;
@@ -1857,14 +1858,6 @@ impl NebulaWorkspace {
             cx,
         );
         cx.notify();
-    }
-
-    fn toggle_shell_palette(&mut self, window: &mut Window, cx: &mut Context<Self>) {
-        if self.command_palette_open && self.shell_picker_open {
-            self.close_command_palette(window, cx);
-            return;
-        }
-        self.open_shell_palette(window, cx);
     }
 
     fn set_workspace_palette_filter(

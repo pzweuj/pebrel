@@ -79,6 +79,10 @@ impl NebulaWorkspace {
             self.settings_surface = Some((view, subscription));
         }
 
+        if self.embedded_shell_picker_active() {
+            self.settings_restore_shell_picker = true;
+            self.dismiss_palette_state();
+        }
         self.settings_tab_open = true;
         self.settings_open = true;
         self.sync_settings_layout(tab_reveal_instant(cx));
@@ -107,7 +111,11 @@ impl NebulaWorkspace {
         self.reveal_active_tab();
         cx.notify();
         if self.tabs.is_empty() {
-            self.close_empty_workspace(window, cx);
+            if std::mem::take(&mut self.settings_restore_shell_picker) {
+                self.open_shell_palette(window, cx);
+            } else {
+                self.close_empty_workspace(window, cx);
+            }
         }
     }
 
@@ -152,6 +160,10 @@ impl NebulaWorkspace {
         if restore_panel && !self.side_panel.open {
             self.toggle_side_panel(self.side_panel.view, cx);
         }
+        if let Some(meta) = self.tab_meta.get_mut(self.active) {
+            meta.has_bell = false;
+            meta.has_unread = false;
+        }
         self.focus_active(window, cx);
         cx.notify();
     }
@@ -176,6 +188,7 @@ impl NebulaWorkspace {
             tooltip: None,
             is_settings: true,
             activity: SidebarActivity::Idle,
+            has_unread: false,
             logo_image: None,
             logo_pending: false,
             program_glyph: None,

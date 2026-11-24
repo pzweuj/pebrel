@@ -572,6 +572,18 @@ pub fn settings_hover_bg(cx: &App, strong: bool) -> Hsla {
     wash(Rgba::new(sk.accent.r, sk.accent.g, sk.accent.b, alpha))
 }
 
+#[cfg(test)]
+pub(crate) fn apply_builtin_for_test(name: ThemeName, cx: &mut App) {
+    let chrome = ResolvedTheme::builtin(name, None);
+    let mode = if chrome.skin().is_light { ThemeMode::Light } else { ThemeMode::Dark };
+    Theme::change(mode, None, cx);
+    apply_skin_tokens(&chrome, cx);
+    let background = shell_color(chrome.chrome_palette());
+    let theme = Theme::global_mut(cx);
+    theme.background = background;
+    theme.tokens.background = background.into();
+}
+
 /// 按运行时主题重建窗口 chrome：先切组件库深浅模式垫底（未映射的长尾
 /// token 落在正确的底色系上），再用旧壳 [`Skin`] 覆写全部关键 token——
 /// 所有主题（含 Nord / Nord Light / Warm Sand）共用同一条 token 应用路径。启动、设置变更、系统外观变化

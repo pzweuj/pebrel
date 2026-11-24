@@ -215,6 +215,7 @@ impl NebulaWorkspace {
                     tooltip,
                     is_settings,
                     activity,
+                    has_unread,
                     logo_image,
                     logo_pending,
                     program_glyph,
@@ -248,13 +249,13 @@ impl NebulaWorkspace {
                     b: color.b as f32 / 255.0,
                     a: 1.0,
                 });
-                let status_color = if active { active_fg } else { muted };
+                let unread_bg = theme.primary.opacity(if dark { 0.22 } else { 0.18 });
+                let unread_hover_bg = theme.primary.opacity(if dark { 0.30 } else { 0.24 });
+                let status_color = if active || has_unread { active_fg } else { muted };
+                let shows_shell_tag =
+                    matches!(activity, SidebarActivity::Idle | SidebarActivity::Running)
+                        && !has_unread;
                 let resting_status: Option<gpui::AnyElement> = match activity {
-                    SidebarActivity::Running => {
-                        let (track, head) =
-                            crate::gpui_shell::theme::sidebar_spinner_colors(cx, active);
-                        Some(Self::spinner(self.spinner_phase, track, head, cx.weak_entity()).into_any_element())
-                    },
                     SidebarActivity::Paused => Some(
                         Icon::new(IconName::Pause)
                             .xsmall()
@@ -264,7 +265,12 @@ impl NebulaWorkspace {
                     // 回合完成、等下一条指令：旧壳蓝点语义——不转圈，留一个
                     // 「有结果没看」的痕迹。
                     SidebarActivity::Done => Some(
-                        div().size(px(6.0)).rounded_full().bg(theme.primary).into_any_element(),
+                        div()
+                            .debug_selector(move || format!("sidebar-tab-unread-dot-{ix}"))
+                            .size(px(6.0))
+                            .rounded_full()
+                            .bg(theme.primary)
+                            .into_any_element(),
                     ),
                     // 刚完成：先闪一个对勾做确认，`COMPLETION_FLASH` 之后沉降
                     // 成上面那个圆点（同一件事的两个阶段，不是两种语义）。
@@ -302,7 +308,15 @@ impl NebulaWorkspace {
                             .text_color(theme.danger)
                             .into_any_element(),
                     ),
-                    SidebarActivity::Idle => shell_tag.map(|tag| {
+                    SidebarActivity::Idle | SidebarActivity::Running if has_unread => Some(
+                        div()
+                            .debug_selector(move || format!("sidebar-tab-unread-dot-{ix}"))
+                            .size(px(6.0))
+                            .rounded_full()
+                            .bg(theme.primary)
+                            .into_any_element(),
+                    ),
+                    SidebarActivity::Idle | SidebarActivity::Running => shell_tag.map(|tag| {
                         Self::shell_status_label(
                             tag,
                             metadata_family.clone(),
@@ -357,10 +371,18 @@ impl NebulaWorkspace {
                 .font_weight(FontWeight::NORMAL)
                 .cursor_pointer()
                 .when(active, |item| item.bg(active_bg).text_color(active_fg))
-                .when(!active && !dragged, |item| {
+                .when(!active && has_unread && !dragged, |item| {
+                    item.bg(unread_bg)
+                        .text_color(active_fg)
+                        .hover(move |style| style.bg(unread_hover_bg))
+                })
+                .when(!active && has_unread && dragged, |item| {
+                    item.bg(unread_hover_bg).text_color(active_fg)
+                })
+                .when(!active && !has_unread && !dragged, |item| {
                     item.text_color(muted).hover(|style| style.bg(hover_bg))
                 })
-                .when(!active && dragged, |item| item.text_color(muted).bg(hover_bg))
+                .when(!active && !has_unread && dragged, |item| item.text_color(muted).bg(hover_bg))
                 .on_click(cx.listener(move |this, _, window, cx| {
                     this.activate_tab(ix, window, cx);
                 }))
@@ -407,6 +429,19 @@ impl NebulaWorkspace {
                             .h(px(row_height - 14.0))
                             .rounded_full()
                             .bg(color),
+                    )
+                })
+                .when(has_unread && strip.is_none(), |row| {
+                    row.child(
+                        div()
+                            .debug_selector(move || format!("sidebar-tab-unread-{ix}"))
+                            .absolute()
+                            .left_0()
+                            .top(px(6.0))
+                            .w(px(3.0))
+                            .h(px(row_height - 12.0))
+                            .rounded_full()
+                            .bg(theme.primary),
                     )
                 })
                 // 权限属于整个会话，先于程序身份呈现，且不被 AI 图标替换。
@@ -521,7 +556,11 @@ impl NebulaWorkspace {
                         .min_w_0()
                         .font_family(chrome_family.clone())
                         .text_size(px(label_px))
-                        .font_weight(FontWeight::NORMAL)
+                        .font_weight(if has_unread {
+                            FontWeight::MEDIUM
+                        } else {
+                            FontWeight::NORMAL
+                        })
                         .truncate()
                         .child(title)
                         .into_any_element(),
@@ -560,7 +599,7 @@ impl NebulaWorkspace {
                                     .justify_end()
                                     .items_center()
                                     .group_hover(hover_group.clone(), |item| item.invisible())
-                                    .child(if matches!(activity, SidebarActivity::Idle) {
+                                    .child(if shows_shell_tag {
                                         status
                                     } else {
                                         Self::tab_status_icon(status).into_any_element()

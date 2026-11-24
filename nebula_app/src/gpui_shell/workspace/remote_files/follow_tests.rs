@@ -817,3 +817,201 @@ fn transfer_progress_formatting_includes_file_counter_and_percentage() {
     assert_eq!(format_transfer_label(&progress), "[2/11] archive.tar.gz");
     assert_eq!(format_transfer_detail(&progress), "512 B / 1.0 KiB · 50%");
 }
+
+#[gpui::test]
+fn remote_row_selection_stays_distinct_and_readable_across_builtin_themes(cx: &mut TestAppContext) {
+    let contrast = |left: gpui::Hsla, right: gpui::Hsla| {
+        let rgb = |color: gpui::Hsla| {
+            let color: gpui::Rgba = color.into();
+            crate::display::color::Rgb::new(
+                (color.r * 255.0).round() as u8,
+                (color.g * 255.0).round() as u8,
+                (color.b * 255.0).round() as u8,
+            )
+        };
+        rgb(left).contrast(*rgb(right))
+    };
+
+    cx.update(|cx| {
+        gpui_component::init(cx);
+        for name in nebula_settings::ThemeName::BUILTIN {
+            crate::gpui_shell::theme::apply_builtin_for_test(name, cx);
+            let theme = cx.theme();
+            let idle = selection::row_selection_style(theme, false, false);
+            let selected = selection::row_selection_style(theme, true, false);
+            let focused_selected = selection::row_selection_style(theme, true, true);
+            let focused_only = selection::row_selection_style(theme, false, true);
+
+            let hover_fill = theme.background.blend(theme.list_hover);
+            let selected_fill = selected.selected_action_bg;
+            let selected_contrast = contrast(theme.background, selected_fill);
+            let hover_contrast = contrast(theme.background, hover_fill);
+            assert!(
+                selected_contrast >= 1.2,
+                "{name:?}: selected fill contrast {selected_contrast:.2} blends into panel",
+            );
+            assert!(
+                selected_contrast > hover_contrast,
+                "{name:?}: selected contrast {selected_contrast:.2} should exceed hover {hover_contrast:.2}",
+            );
+            assert!(
+                contrast(selected_fill, selected.label) >= 4.5,
+                "{name:?}: selected label must keep WCAG AA readability",
+            );
+            assert_eq!(idle.border.a, 0.0, "{name:?}: idle row border should be transparent");
+            assert!(
+                selected.border.a >= 0.35,
+                "{name:?}: selected row must keep a visible border even without focus",
+            );
+            assert!(
+                focused_selected.border.a > selected.border.a,
+                "{name:?}: focused selected row should strengthen its focus ring",
+            );
+            assert!(
+                focused_only.border.a > selected.border.a,
+                "{name:?}: keyboard-focused unselected row must remain distinct",
+            );
+        }
+    });
+}
+
+#[gpui::test]
+fn remote_row_selection_renders_indicator_bars_and_spreadsheet_icons(cx: &mut TestAppContext) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.entries = [
+            ("budget.xlsx", "/srv/Alpha 中/budget.xlsx"),
+            ("legacy.xls", "/srv/Alpha 中/legacy.xls"),
+            ("notes.docx", "/srv/Alpha 中/notes.docx"),
+        ]
+        .into_iter()
+        .map(|(name, path)| SftpEntry {
+            name: name.to_owned(),
+            path: path.to_owned(),
+            kind: SftpEntryKind::File,
+            size: 1024,
+            modified: 1_700_000_000,
+            permissions: "-rw-r--r--".to_owned(),
+            is_parent: false,
+        })
+        .collect();
+        cx.notify();
+    });
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    assert!(
+        fixture.window.debug_bounds("sftp-file-icon-file-icons/material/table.svg").is_some(),
+        "xlsx/xls files should render with the green table icon",
+    );
+    assert!(
+        fixture.window.debug_bounds("sftp-file-icon-file-icons/material/document.svg").is_some(),
+        "docx files should continue using the document icon",
+    );
+    assert!(fixture.window.debug_bounds("remote-row-selected-bar-budget.xlsx").is_none());
+
+    let first = fixture.window.debug_bounds("remote-row-budget.xlsx").unwrap();
+    fixture.window.simulate_click(first.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    let bar_first = fixture.window.debug_bounds("remote-row-selected-bar-budget.xlsx").unwrap();
+    assert!(bar_first.size.width >= px(2.5));
+    assert!(bar_first.left() <= first.left() + px(2.0));
+    assert!(fixture.window.debug_bounds("remote-row-selected-bar-legacy.xls").is_none());
+
+    // Shift-click extends selection and keeps distinct accent bars across all selected rows.
+    let second = fixture.window.debug_bounds("remote-row-legacy.xls").unwrap();
+    fixture.window.simulate_click(second.center(), gpui::Modifiers::shift());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    let bar_first_joined =
+        fixture.window.debug_bounds("remote-row-selected-bar-budget.xlsx").unwrap();
+    let bar_second_joined =
+        fixture.window.debug_bounds("remote-row-selected-bar-legacy.xls").unwrap();
+    assert!(bar_first_joined.bottom() >= bar_second_joined.top() - px(2.5));
+    assert!(fixture.window.debug_bounds("remote-row-selected-bar-notes.docx").is_none());
+
+    // Escape clears selection and removes all selection indicator bars.
+    fixture.window.simulate_keystrokes("escape");
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(fixture.window.debug_bounds("remote-row-selected-bar-budget.xlsx").is_none());
+    assert!(fixture.window.debug_bounds("remote-row-selected-bar-legacy.xls").is_none());
+}
+
+#[gpui::test]
+fn clicking_outside_remote_path_editor_cancels_editing_without_blocking_target(
+    cx: &mut TestAppContext,
+) {
+    let mut fixture = open(cx);
+    listed(&mut fixture, "/srv/Alpha 中");
+    fixture.workspace.update(&mut fixture.window, |workspace, cx| {
+        workspace.remote_browser.entries = vec![SftpEntry {
+            name: "app.conf".to_owned(),
+            path: "/srv/Alpha 中/app.conf".to_owned(),
+            kind: SftpEntryKind::File,
+            size: 128,
+            modified: 1_700_000_000,
+            permissions: "-rw-r--r--".to_owned(),
+            is_parent: false,
+        }];
+        cx.notify();
+    });
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+
+    // Enter path edit mode by clicking the path display.
+    let path_bounds = fixture.window.debug_bounds("remote-files-path").unwrap();
+    fixture.window.simulate_click(path_bounds.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    let editor_bounds = fixture.window.debug_bounds("remote-files-path-editor").unwrap();
+
+    // Clicking inside the editor keeps edit mode active.
+    let inside_input = gpui::point(editor_bounds.left() + px(12.0), editor_bounds.center().y);
+    fixture.window.simulate_click(inside_input, gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(fixture.window.debug_bounds("remote-files-path-editor").is_some());
+
+    // Clicking an SFTP row outside the editor cancels path editing and still selects that row.
+    let row_bounds = fixture.window.debug_bounds("remote-row-app.conf").unwrap();
+    fixture.window.simulate_click(row_bounds.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| window.draw(cx).clear(cx));
+    assert!(fixture.window.debug_bounds("remote-files-path-editor").is_none());
+    assert!(fixture.window.debug_bounds("remote-files-path").is_some());
+    fixture.workspace.read_with(&fixture.window, |workspace, _| {
+        assert!(workspace.remote_path.is_none());
+        assert!(workspace.remote_browser.selection.contains("/srv/Alpha 中/app.conf"));
+    });
+    assert!(fixture.window.debug_bounds("remote-row-selected-bar-app.conf").is_some());
+
+    // Re-enter edit mode and click the Check button: must commit, not cancel.
+    let path_bounds = fixture.window.debug_bounds("remote-files-path").unwrap();
+    fixture.window.simulate_click(path_bounds.center(), gpui::Modifiers::default());
+    fixture.window.run_until_parked();
+    fixture.window.update(|window, cx| {
+        let input = fixture
+            .workspace
+            .read(cx)
+            .remote_path
+            .as_ref()
+            .expect("path editor open")
+            .input
+            .clone();
+        input.update(cx, |input, cx| {
+            input.set_value("/srv/clicked-go".to_owned(), window, cx);
+        });
+        window.draw(cx).clear(cx);
+    });
+    let go_bounds = fixture.window.debug_bounds("remote-files-path-go").unwrap();
+    fixture.window.simulate_click(go_bounds.center(), gpui::Modifiers::default());
+    listed(&mut fixture, "/srv/clicked-go");
+    assert!(
+        fixture
+            .workspace
+            .read_with(&fixture.window, |workspace, _| workspace.remote_path.is_none())
+    );
+}

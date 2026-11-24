@@ -1200,6 +1200,7 @@ pub(crate) fn focus_notification(pane_id: Option<u64>, cx: &mut App) {
             }
             if let Some(meta) = workspace.tab_meta.get_mut(tab_ix) {
                 meta.has_bell = false;
+                meta.has_unread = false;
             }
             workspace.reveal_active_tab();
             workspace.focus_active(window, cx);

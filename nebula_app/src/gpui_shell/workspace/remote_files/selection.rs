@@ -125,3 +125,45 @@ impl Selection {
         self.focus = Some(paths[index].to_owned());
     }
 }
+
+#[derive(Clone, Copy, Debug)]
+pub(super) struct RowSelectionStyle {
+    pub(super) selected_bg: gpui::Hsla,
+    pub(super) selected_hover_bg: gpui::Hsla,
+    pub(super) selected_action_bg: gpui::Hsla,
+    pub(super) selected_action_hover_bg: gpui::Hsla,
+    pub(super) border: gpui::Hsla,
+    pub(super) indicator: gpui::Hsla,
+    pub(super) label: gpui::Hsla,
+    pub(super) size: gpui::Hsla,
+}
+
+/// High-contrast row styling for SFTP selection so selected rows stay clearly
+/// distinguishable from idle and hovered rows across both light and dark themes,
+/// even when keyboard focus leaves the list or multiple rows are selected.
+pub(super) fn row_selection_style(
+    theme: &gpui_component::Theme,
+    selected: bool,
+    focused: bool,
+) -> RowSelectionStyle {
+    let dark = theme.is_dark();
+    let selected_bg = theme.primary.opacity(if dark { 0.24 } else { 0.22 });
+    let selected_hover_bg = theme.primary.opacity(if dark { 0.32 } else { 0.28 });
+    let border = if focused {
+        theme.ring.opacity(if selected { 0.9 } else { 0.85 })
+    } else if selected {
+        theme.primary.opacity(if dark { 0.48 } else { 0.40 })
+    } else {
+        gpui::transparent_black()
+    };
+    RowSelectionStyle {
+        selected_bg,
+        selected_hover_bg,
+        selected_action_bg: theme.background.blend(selected_bg),
+        selected_action_hover_bg: theme.background.blend(selected_hover_bg),
+        border,
+        indicator: theme.primary,
+        label: if selected { theme.tab_active_foreground } else { theme.foreground },
+        size: if selected { theme.foreground.opacity(0.82) } else { theme.muted_foreground },
+    }
+}
